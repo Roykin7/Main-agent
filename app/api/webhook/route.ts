@@ -29,7 +29,10 @@ export async function POST(req: NextRequest) {
   }
 
   const payload = JSON.parse(rawBody)
+  console.log('WA payload:', JSON.stringify(payload, null, 2))
+
   const incoming = parseIncomingText(payload)
+  console.log('WA parsed:', incoming)
 
   // Ignore non-text messages (audio/image/status updates) for the MVP.
   if (!incoming) {
