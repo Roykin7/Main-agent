@@ -41,19 +41,22 @@ export async function POST(req: NextRequest) {
 
   const { from, text } = incoming
 
-  // Fetch history before saving the current message, so it isn't
-  // duplicated as the trailing turn passed to chat().
-  const [history, contextChunks] = await Promise.all([
-    getRecentHistory(from),
-    retrieveContext(text),
-  ])
+  try {
+    const [history, contextChunks] = await Promise.all([
+      getRecentHistory(from),
+      retrieveContext(text),
+    ])
 
-  await saveMessage(from, 'user', text)
+    await saveMessage(from, 'user', text)
 
-  const reply = await chat(history, text, contextChunks)
+    const reply = await chat(history, text, contextChunks)
 
-  await sendText(from, reply)
-  await saveMessage(from, 'model', reply)
+    await sendText(from, reply)
+    await saveMessage(from, 'model', reply)
+  } catch (err) {
+    console.error('ZOE processing error:', err)
+  }
 
+  // Always return 200 so Meta doesn't retry and flood the endpoint.
   return NextResponse.json({ ok: true })
 }
