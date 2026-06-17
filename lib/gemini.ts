@@ -1,15 +1,21 @@
-import { GoogleGenAI, Chat } from '@google/genai'
+import { GoogleGenAI } from '@google/genai'
+import OpenAI from 'openai'
 import { ZOE_SYSTEM_PROMPT } from './zoe-prompt'
 
-// Two clients: v1beta for chat (supports systemInstruction), v1 for embeddings.
-let chatAI: GoogleGenAI | undefined
-let embedAI: GoogleGenAI | undefined
-
-function getChatAI(): GoogleGenAI {
-  if (!chatAI) chatAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! })
-  return chatAI
+// OpenRouter for chat — OpenAI-compatible API, much more generous quota.
+let openRouter: OpenAI | undefined
+function getOpenRouter(): OpenAI {
+  if (!openRouter) {
+    openRouter = new OpenAI({
+      apiKey: process.env.OPENROUTER_API_KEY!,
+      baseURL: 'https://openrouter.ai/api/v1',
+    })
+  }
+  return openRouter
 }
 
+// Gemini v1 for embeddings only (separate quota from chat, unaffected).
+let embedAI: GoogleGenAI | undefined
 function getEmbedAI(): GoogleGenAI {
   if (!embedAI) {
     embedAI = new GoogleGenAI({
@@ -30,10 +36,6 @@ export type KnowledgeChunk = {
   content: string
 }
 
-/**
- * Sends a user message to Gemini along with retrieved knowledge context
- * and recent conversation history, and returns ZOE's reply text.
- */
 export async function chat(
   history: HistoryMessage[],
   userText: string,
@@ -48,23 +50,23 @@ export async function chat(
 
   const message = `Knowledge:\n${knowledgeBlock}\n\nUser message:\n${userText}`
 
-  const session: Chat = getChatAI().chats.create({
-    model: 'gemini-2.0-flash',
-    config: { systemInstruction: ZOE_SYSTEM_PROMPT },
-    history: history.map((m) => ({
-      role: m.role,
-      parts: [{ text: m.content }],
+  const messages: OpenAI.ChatCompletionMessageParam[] = [
+    { role: 'system', content: ZOE_SYSTEM_PROMPT },
+    ...history.map((m) => ({
+      role: (m.role === 'model' ? 'assistant' : 'user') as 'user' | 'assistant',
+      content: m.content,
     })),
+    { role: 'user', content: message },
+  ]
+
+  const response = await getOpenRouter().chat.completions.create({
+    model: process.env.OPENROUTER_MODEL ?? 'google/gemini-2.0-flash',
+    messages,
   })
 
-  const result = await session.sendMessage({ message })
-  return result.text ?? ''
+  return response.choices[0]?.message?.content ?? ''
 }
 
-/**
- * Returns a 768-dim embedding vector for the given text, used for
- * vector similarity search against knowledge_chunks.
- */
 export async function embed(text: string): Promise<number[]> {
   const result = await getEmbedAI().models.embedContent({
     model: 'gemini-embedding-001',
