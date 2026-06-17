@@ -1,18 +1,23 @@
 import { GoogleGenAI, Chat } from '@google/genai'
 import { ZOE_SYSTEM_PROMPT } from './zoe-prompt'
 
-// Lazily created on first use, so importing this module doesn't require
-// GEMINI_API_KEY to be set (e.g. during `next build` page-data collection).
-let ai: GoogleGenAI | undefined
+// Two clients: v1beta for chat (supports systemInstruction), v1 for embeddings.
+let chatAI: GoogleGenAI | undefined
+let embedAI: GoogleGenAI | undefined
 
-function getAI(): GoogleGenAI {
-  if (!ai) {
-    ai = new GoogleGenAI({
+function getChatAI(): GoogleGenAI {
+  if (!chatAI) chatAI = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! })
+  return chatAI
+}
+
+function getEmbedAI(): GoogleGenAI {
+  if (!embedAI) {
+    embedAI = new GoogleGenAI({
       apiKey: process.env.GEMINI_API_KEY!,
       httpOptions: { apiVersion: 'v1' },
     })
   }
-  return ai
+  return embedAI
 }
 
 export type HistoryMessage = {
@@ -43,7 +48,7 @@ export async function chat(
 
   const message = `Knowledge:\n${knowledgeBlock}\n\nUser message:\n${userText}`
 
-  const session: Chat = getAI().chats.create({
+  const session: Chat = getChatAI().chats.create({
     model: 'gemini-2.0-flash',
     config: { systemInstruction: ZOE_SYSTEM_PROMPT },
     history: history.map((m) => ({
@@ -61,7 +66,7 @@ export async function chat(
  * vector similarity search against knowledge_chunks.
  */
 export async function embed(text: string): Promise<number[]> {
-  const result = await getAI().models.embedContent({
+  const result = await getEmbedAI().models.embedContent({
     model: 'gemini-embedding-001',
     contents: text,
     config: { outputDimensionality: 768 },
