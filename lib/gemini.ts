@@ -60,7 +60,7 @@ export async function chat(
   ]
 
   const response = await getOpenRouter().chat.completions.create({
-    model: process.env.OPENROUTER_MODEL ?? 'google/gemini-2.0-flash',
+    model: process.env.OPENROUTER_MODEL ?? 'google/gemini-2.0-flash-001',
     messages,
   })
 
