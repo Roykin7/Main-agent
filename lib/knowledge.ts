@@ -24,23 +24,26 @@ export async function retrieveContext(query: string): Promise<KnowledgeChunk[]> 
     }
   }
 
-  const queryEmbedding = await embed(query)
-
-  const { data, error } = await getSupabase().rpc('match_knowledge_chunks', {
-    query_embedding: queryEmbedding,
-    match_count: MATCH_COUNT,
-    filter_topic: null,
-  })
-
-  if (error) {
-    console.error('retrieveContext error:', error)
-  } else {
-    chunks.push(
-      ...(data ?? []).map((row: any) => ({
-        title: row.title,
-        content: row.content,
-      }))
-    )
+  try {
+    const queryEmbedding = await embed(query)
+    const { data, error } = await getSupabase().rpc('match_knowledge_chunks', {
+      query_embedding: queryEmbedding,
+      match_count: MATCH_COUNT,
+      filter_topic: null,
+    })
+    if (error) {
+      console.error('retrieveContext rpc error:', error)
+    } else {
+      chunks.push(
+        ...(data ?? []).map((row: any) => ({
+          title: row.title,
+          content: row.content,
+        }))
+      )
+    }
+  } catch (err) {
+    // Embedding quota exceeded or API error — ZOE replies without KB context.
+    console.error('retrieveContext embed error (quota?):', err)
   }
 
   return chunks
