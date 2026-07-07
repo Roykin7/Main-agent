@@ -129,11 +129,12 @@ async function main() {
 
     const { data: existingChunk } = await supabase
       .from('knowledge_chunks')
-      .select('id')
+      .select('id, embedding')
       .eq('source', post.link)
       .maybeSingle()
 
     if (!existingChunk) {
+      // New devotion — embed and insert
       const embedding = await embed(`${title}\n${text}`)
       const { error: chunkError } = await supabase.from('knowledge_chunks').insert({
         topic: 'phaneroo',
@@ -143,6 +144,15 @@ async function main() {
         source: post.link,
       })
       if (chunkError) console.error(`[${devoDate}] knowledge_chunks insert failed:`, chunkError.message)
+      await sleep(EMBED_DELAY_MS)
+    } else if (!existingChunk.embedding) {
+      // Row exists but embedding was cleared (e.g. after Voyage migration) — re-embed
+      const embedding = await embed(`${title}\n${text}`)
+      const { error: chunkError } = await supabase
+        .from('knowledge_chunks')
+        .update({ embedding })
+        .eq('id', existingChunk.id)
+      if (chunkError) console.error(`[${devoDate}] knowledge_chunks re-embed failed:`, chunkError.message)
       await sleep(EMBED_DELAY_MS)
     }
 

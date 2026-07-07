@@ -1,9 +1,9 @@
-name: Sync social posts
+name: Sync knowledge base
 
 on:
   schedule:
-    # 6 AM Uganda time (UTC+3) = 3 AM UTC
-    - cron: '0 3 * * *'
+    # Every 4 hours — catches new social posts within 4 hours of publishing
+    - cron: '0 */4 * * *'
   workflow_dispatch: # allow manual trigger from the Actions tab
 
 jobs:
@@ -12,7 +12,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ── Node.js (for Facebook sync via TypeScript) ──────────────────────
+      # ── Node.js ─────────────────────────────────────────────────────────────
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -28,8 +28,7 @@ jobs:
 
       - run: pip install -r requirements-social.txt
 
-      # Cache the twscrape accounts.db so we stay logged in between runs
-      # (re-logging every run can trigger Twitter's bot detection)
+      # Cache twscrape session so we stay logged in between runs
       - name: Restore twscrape session
         uses: actions/cache@v4
         with:
@@ -37,7 +36,7 @@ jobs:
           key: twscrape-session-${{ runner.os }}
           restore-keys: twscrape-session-
 
-      # ── Run syncs ────────────────────────────────────────────────────────
+      # ── Sync Twitter/X posts ─────────────────────────────────────────────
       - name: Sync Twitter/X posts
         run: python scripts/sync-twitter.py
         env:
@@ -46,15 +45,25 @@ jobs:
           TWITTER_SCRAPER_PASSWORD: ${{ secrets.TWITTER_SCRAPER_PASSWORD }}
           TWITTER_SCRAPER_EMAIL: ${{ secrets.TWITTER_SCRAPER_EMAIL }}
           TWITTER_SCRAPER_EMAIL_PASSWORD: ${{ secrets.TWITTER_SCRAPER_EMAIL_PASSWORD }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
+      # ── Sync Facebook posts ──────────────────────────────────────────────
       - name: Sync Facebook posts
         run: npm run sync-social
         env:
           FACEBOOK_PAGE_ID: ${{ secrets.FACEBOOK_PAGE_ID }}
           FACEBOOK_ACCESS_TOKEN: ${{ secrets.FACEBOOK_ACCESS_TOKEN }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      # ── Ingest new devotions from phaneroo.org ───────────────────────────
+      # Runs on every cycle — idempotent, only picks up devotions not yet stored.
+      - name: Ingest latest devotions
+        run: npm run ingest-devotions
+        env:
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
