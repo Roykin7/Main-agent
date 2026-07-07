@@ -60,9 +60,16 @@ jobs:
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
       # ── Ingest new devotions from phaneroo.org ───────────────────────────
-      # Runs on every cycle — idempotent, only picks up devotions not yet stored.
       - name: Ingest latest devotions
         run: npm run ingest-devotions
+        env:
+          VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+
+      # ── Ingest sermons, testimonials, prophetic words ────────────────────
+      - name: Ingest teachings and testimonials
+        run: npm run ingest-teachings
         env:
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
