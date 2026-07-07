@@ -39,6 +39,14 @@ create table if not exists devotions (
 );
 create index if not exists devotions_devo_date_idx on devotions (devo_date);
 
+-- Rolling summaries for long conversations. Updated every 10 messages once the
+-- raw history window fills, so ZOE remembers context beyond the last 20 messages.
+create table if not exists conversation_summaries (
+  phone text primary key,
+  summary text not null,
+  updated_at timestamptz not null default now()
+);
+
 -- RPC used by lib/knowledge.ts to find the top-k most relevant chunks
 -- for a given query embedding, optionally filtered by topic.
 create or replace function match_knowledge_chunks(

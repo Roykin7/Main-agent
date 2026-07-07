@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { verifySignature, parseIncomingText, sendText } from '@/lib/whatsapp'
 import { chat } from '@/lib/gemini'
 import { retrieveContext } from '@/lib/knowledge'
-import { getRecentHistory, saveMessage } from '@/lib/messages'
+import { getConversationContext, saveMessage, maybeUpdateSummary } from '@/lib/messages'
 
 // Meta calls this once when you configure the webhook URL, to confirm
 // you control the endpoint.
@@ -42,24 +42,27 @@ export async function POST(req: NextRequest) {
   const { from, text } = incoming
 
   try {
-    console.log('Step 1: fetching history + context for', from)
-    const [history, contextChunks] = await Promise.all([
-      getRecentHistory(from),
+    console.log('Step 1: fetching context for', from)
+    const [{ summary, messages: history, totalCount }, contextChunks] = await Promise.all([
+      getConversationContext(from),
       retrieveContext(text),
     ])
-    console.log('Step 2: history', history.length, 'chunks', contextChunks.length)
+    console.log('Step 2: history', history.length, 'msgs, summary', !!summary, 'chunks', contextChunks.length)
 
     await saveMessage(from, 'user', text)
     console.log('Step 3: saved user message')
 
-    const reply = await chat(history, text, contextChunks)
+    const reply = await chat(history, text, contextChunks, summary)
     console.log('Step 4: got reply:', reply?.slice(0, 80))
 
     await sendText(from, reply)
     console.log('Step 5: sent reply to', from)
 
     await saveMessage(from, 'model', reply)
-    console.log('Step 6: done')
+    console.log('Step 6: saved model reply')
+
+    await maybeUpdateSummary(from, totalCount)
+    console.log('Step 7: done')
   } catch (err) {
     console.error('ZOE error:', err)
   }
