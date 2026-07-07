@@ -66,16 +66,20 @@ export async function chat(
       return msg.content ?? ''
     }
 
+    // Filter to function calls only — type predicate ensures .function is accessible
+    const fnCalls = msg.tool_calls.filter(
+      (tc): tc is OpenAI.ChatCompletionMessageToolCall => tc.type === 'function'
+    )
+
     // Add assistant turn (with tool_calls) to the thread
     messages.push({
       role: 'assistant',
       content: msg.content ?? null,
-      tool_calls: msg.tool_calls,
+      tool_calls: fnCalls,
     })
 
     // Execute every requested tool and add results
-    for (const toolCall of msg.tool_calls) {
-      if (toolCall.type !== 'function') continue
+    for (const toolCall of fnCalls) {
       console.log(`Tool: ${toolCall.function.name}(${toolCall.function.arguments})`)
       let result: string
       try {
