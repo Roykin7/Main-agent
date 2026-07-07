@@ -1,9 +1,14 @@
 import { getSupabase } from './supabase'
-import { embed, KnowledgeChunk } from './gemini'
+import { embed } from './embeddings'
 import { detectScriptureRequest, getVerse } from './bible'
 
 const MATCH_COUNT = 5
 const SOCIAL_MATCH_COUNT = 3
+
+export type KnowledgeChunk = {
+  title: string | null
+  content: string
+}
 
 // Uganda is UTC+3
 function ugandaDateString(offsetDays = 0): string {
@@ -11,97 +16,47 @@ function ugandaDateString(offsetDays = 0): string {
   return new Date(ms).toISOString().split('T')[0]
 }
 
-function formatDisplayDate(isoDate: string): string {
-  const [y, m, d] = isoDate.split('-').map(Number)
-  return new Date(y, m - 1, d).toLocaleDateString('en-UG', {
-    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-  })
-}
-
-function detectDevotionRequest(text: string): string | null {
-  const lower = text.toLowerCase()
-  const keywords = ['devotion', 'devo', 'daily word', 'word for today', 'morning word', 'daily bread']
-  if (!keywords.some(k => lower.includes(k))) return null
-  if (lower.includes('yesterday')) return ugandaDateString(-1)
-  if (lower.includes('tomorrow')) return ugandaDateString(1)
-  return ugandaDateString(0)
-}
-
 /**
- * Embeds the user's question and finds the most relevant knowledge_chunks
- * via pgvector cosine similarity (see match_knowledge_chunks in schema.sql).
- * If the message contains a Bible reference (e.g. "John 3:16"), fetches the
- * verse. If it contains a devotion request, looks up today's devotion with
- * the date clearly included so ZOE can mention it.
+ * Vector-searches both knowledge_chunks and social_posts for the given query.
+ * Called by the search_knowledge tool — no heuristic detection, just raw search.
  */
-export async function retrieveContext(query: string): Promise<KnowledgeChunk[]> {
+export async function searchKnowledge(query: string): Promise<KnowledgeChunk[]> {
+  const queryEmbedding = await embed(query)
+
+  const [kbResult, socialResult] = await Promise.all([
+    getSupabase().rpc('match_knowledge_chunks', {
+      query_embedding: queryEmbedding,
+      match_count: MATCH_COUNT,
+      filter_topic: null,
+    }),
+    getSupabase().rpc('match_social_posts', {
+      query_embedding: queryEmbedding,
+      match_count: SOCIAL_MATCH_COUNT,
+    }),
+  ])
+
   const chunks: KnowledgeChunk[] = []
 
-  const scriptureRequest = detectScriptureRequest(query)
-  if (scriptureRequest) {
-    const verseText = await getVerse(scriptureRequest.passageId, scriptureRequest.translation)
-    if (verseText) {
-      chunks.push({
-        title: `${scriptureRequest.reference} (${scriptureRequest.translation})`,
-        content: verseText,
-      })
-    }
+  if (kbResult.error) {
+    console.error('searchKnowledge kb error:', kbResult.error)
+  } else {
+    chunks.push(
+      ...(kbResult.data ?? []).map((row: any) => ({
+        title: row.title,
+        content: row.content,
+      }))
+    )
   }
 
-  const devotionDate = detectDevotionRequest(query)
-  if (devotionDate) {
-    const devotion = await getDevotion(devotionDate)
-    if (devotion) {
-      const displayDate = formatDisplayDate(devotionDate)
-      const titleParts = [`Phaneroo Daily Devotion — ${displayDate}`]
-      if (devotion.title) titleParts.push(`"${devotion.title}"`)
-      if (devotion.scriptureRef) titleParts.push(`(${devotion.scriptureRef})`)
-      chunks.unshift({
-        title: titleParts.join(' '),
-        content: devotion.content,
-      })
-    }
-  }
-
-  try {
-    const queryEmbedding = await embed(query)
-
-    const [kbResult, socialResult] = await Promise.all([
-      getSupabase().rpc('match_knowledge_chunks', {
-        query_embedding: queryEmbedding,
-        match_count: MATCH_COUNT,
-        filter_topic: null,
-      }),
-      getSupabase().rpc('match_social_posts', {
-        query_embedding: queryEmbedding,
-        match_count: SOCIAL_MATCH_COUNT,
-      }),
-    ])
-
-    if (kbResult.error) {
-      console.error('retrieveContext kb rpc error:', kbResult.error)
-    } else {
-      chunks.push(
-        ...(kbResult.data ?? []).map((row: any) => ({
-          title: row.title,
-          content: row.content,
-        }))
-      )
-    }
-
-    if (socialResult.error) {
-      console.error('retrieveContext social rpc error:', socialResult.error)
-    } else {
-      chunks.push(
-        ...(socialResult.data ?? []).map((row: any) => ({
-          title: `Phaneroo on ${row.platform === 'twitter' ? 'Twitter/X' : 'Facebook'}`,
-          content: row.content,
-        }))
-      )
-    }
-  } catch (err) {
-    // Embedding quota exceeded or API error — ZOE replies without KB context.
-    console.error('retrieveContext embed error (quota?):', err)
+  if (socialResult.error) {
+    console.error('searchKnowledge social error:', socialResult.error)
+  } else {
+    chunks.push(
+      ...(socialResult.data ?? []).map((row: any) => ({
+        title: `Phaneroo on ${row.platform === 'twitter' ? 'Twitter/X' : 'Facebook'}`,
+        content: row.content,
+      }))
+    )
   }
 
   return chunks
@@ -114,10 +69,6 @@ export type Devotion = {
   sourceUrl: string | null
 }
 
-/**
- * Looks up a devotion for a specific date (YYYY-MM-DD). Returns null if
- * none has been added yet for that date.
- */
 export async function getDevotion(date: string): Promise<Devotion | null> {
   const { data, error } = await getSupabase()
     .from('devotions')
@@ -129,7 +80,6 @@ export async function getDevotion(date: string): Promise<Devotion | null> {
     console.error('getDevotion error:', error)
     return null
   }
-
   if (!data) return null
 
   return {

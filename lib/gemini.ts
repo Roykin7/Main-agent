@@ -1,8 +1,7 @@
-import { GoogleGenAI } from '@google/genai'
 import OpenAI from 'openai'
 import { ZOE_SYSTEM_PROMPT } from './zoe-prompt'
+import { ZOE_TOOLS, executeToolCall } from './tools'
 
-// OpenRouter for chat — OpenAI-compatible API, much more generous quota.
 let openRouter: OpenAI | undefined
 function getOpenRouter(): OpenAI {
   if (!openRouter) {
@@ -14,40 +13,26 @@ function getOpenRouter(): OpenAI {
   return openRouter
 }
 
-// Gemini v1 for embeddings only (separate quota from chat, unaffected).
-let embedAI: GoogleGenAI | undefined
-function getEmbedAI(): GoogleGenAI {
-  if (!embedAI) {
-    embedAI = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY!,
-      httpOptions: { apiVersion: 'v1' },
-    })
-  }
-  return embedAI
-}
-
 export type HistoryMessage = {
   role: 'user' | 'model'
   content: string
 }
 
-export type KnowledgeChunk = {
-  title: string | null
-  content: string
-}
-
+/**
+ * Agentic chat loop. ZOE decides which tools to call (search_knowledge,
+ * get_devotion, get_bible_verse), executes them, and uses the results to
+ * build a grounded reply — rather than having all context blindly injected
+ * upfront. Runs up to 3 tool-call rounds before returning.
+ */
 export async function chat(
   history: HistoryMessage[],
   userText: string,
-  contextChunks: KnowledgeChunk[],
   summary: string | null = null
 ): Promise<string> {
   const messages: OpenAI.ChatCompletionMessageParam[] = [
     { role: 'system', content: ZOE_SYSTEM_PROMPT },
   ]
 
-  // For long conversations, inject the rolling summary of older turns so ZOE
-  // remembers context that has scrolled out of the raw history window.
   if (summary) {
     messages.push({
       role: 'system',
@@ -55,9 +40,6 @@ export async function chat(
     })
   }
 
-  // Past turns — user messages are plain text, model replies are plain text.
-  // Keeping them clean (no knowledge wrappers) lets the model treat the
-  // history as a real conversation rather than a series of fresh templates.
   messages.push(
     ...history.map((m) => ({
       role: (m.role === 'model' ? 'assistant' : 'user') as 'user' | 'assistant',
@@ -65,30 +47,57 @@ export async function chat(
     }))
   )
 
-  // Inject retrieved knowledge as a system turn immediately before the user's
-  // message so the structure stays consistent across all turns.
-  if (contextChunks.length > 0) {
-    const knowledgeBlock = contextChunks
-      .map((c) => (c.title ? `${c.title}: ${c.content}` : c.content))
-      .join('\n---\n')
-    messages.push({ role: 'system', content: `Retrieved context for this question:\n${knowledgeBlock}` })
-  }
-
   messages.push({ role: 'user', content: userText })
 
-  const response = await getOpenRouter().chat.completions.create({
-    model: process.env.OPENROUTER_MODEL ?? 'openai/gpt-4o-mini',
-    messages,
-  })
+  const model = process.env.OPENROUTER_MODEL ?? 'openai/gpt-4o-mini'
 
-  return response.choices[0]?.message?.content ?? ''
+  for (let round = 0; round < 3; round++) {
+    const response = await getOpenRouter().chat.completions.create({
+      model,
+      messages,
+      tools: ZOE_TOOLS,
+      tool_choice: 'auto',
+    })
+
+    const msg = response.choices[0].message
+
+    // No tool calls — this is the final reply
+    if (!msg.tool_calls || msg.tool_calls.length === 0) {
+      return msg.content ?? ''
+    }
+
+    // Add assistant turn (with tool_calls) to the thread
+    messages.push({
+      role: 'assistant',
+      content: msg.content ?? null,
+      tool_calls: msg.tool_calls,
+    })
+
+    // Execute every requested tool and add results
+    for (const toolCall of msg.tool_calls) {
+      console.log(`Tool: ${toolCall.function.name}(${toolCall.function.arguments})`)
+      let result: string
+      try {
+        result = await executeToolCall(
+          toolCall.function.name,
+          JSON.parse(toolCall.function.arguments)
+        )
+      } catch (err) {
+        result = `Tool execution error: ${err}`
+      }
+      messages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        content: result,
+      })
+    }
+  }
+
+  // Max rounds reached — get a final answer without offering more tool calls
+  const fallback = await getOpenRouter().chat.completions.create({ model, messages })
+  return fallback.choices[0]?.message?.content ?? ''
 }
 
-/**
- * Incrementally updates a rolling summary. Called by maybeUpdateSummary()
- * when a batch of messages has just slipped outside the raw history window.
- * Folds the new batch into any existing summary so no context is ever lost.
- */
 export async function summarizeHistory(
   newMessages: HistoryMessage[],
   existingSummary: string | null
@@ -108,13 +117,4 @@ export async function summarizeHistory(
   })
 
   return response.choices[0]?.message?.content ?? existingSummary ?? ''
-}
-
-export async function embed(text: string): Promise<number[]> {
-  const result = await getEmbedAI().models.embedContent({
-    model: 'gemini-embedding-001',
-    contents: text,
-    config: { outputDimensionality: 768 },
-  })
-  return result.embeddings?.[0]?.values ?? []
 }

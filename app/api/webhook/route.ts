@@ -1,11 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifySignature, parseIncomingText, sendText } from '@/lib/whatsapp'
 import { chat } from '@/lib/gemini'
-import { retrieveContext } from '@/lib/knowledge'
 import { getConversationContext, saveMessage, maybeUpdateSummary } from '@/lib/messages'
 
-// Meta calls this once when you configure the webhook URL, to confirm
-// you control the endpoint.
 export async function GET(req: NextRequest) {
   const searchParams = req.nextUrl.searchParams
   const mode = searchParams.get('hub.mode')
@@ -19,7 +16,6 @@ export async function GET(req: NextRequest) {
   return new NextResponse('Forbidden', { status: 403 })
 }
 
-// Handles incoming WhatsApp messages.
 export async function POST(req: NextRequest) {
   const rawBody = await req.text()
   const signature = req.headers.get('x-hub-signature-256')
@@ -29,12 +25,8 @@ export async function POST(req: NextRequest) {
   }
 
   const payload = JSON.parse(rawBody)
-  console.log('WA payload:', JSON.stringify(payload, null, 2))
-
   const incoming = parseIncomingText(payload)
-  console.log('WA parsed:', incoming)
 
-  // Ignore non-text messages (audio/image/status updates) for the MVP.
   if (!incoming) {
     return NextResponse.json({ ok: true })
   }
@@ -43,16 +35,13 @@ export async function POST(req: NextRequest) {
 
   try {
     console.log('Step 1: fetching context for', from)
-    const [{ summary, messages: history, totalCount }, contextChunks] = await Promise.all([
-      getConversationContext(from),
-      retrieveContext(text),
-    ])
-    console.log('Step 2: history', history.length, 'msgs, summary', !!summary, 'chunks', contextChunks.length)
+    const { summary, messages: history, totalCount } = await getConversationContext(from)
+    console.log('Step 2: history', history.length, 'msgs, summary', !!summary)
 
     await saveMessage(from, 'user', text)
     console.log('Step 3: saved user message')
 
-    const reply = await chat(history, text, contextChunks, summary)
+    const reply = await chat(history, text, summary)
     console.log('Step 4: got reply:', reply?.slice(0, 80))
 
     await sendText(from, reply)
@@ -67,6 +56,5 @@ export async function POST(req: NextRequest) {
     console.error('ZOE error:', err)
   }
 
-  // Always return 200 so Meta doesn't retry and flood the endpoint.
   return NextResponse.json({ ok: true })
 }
