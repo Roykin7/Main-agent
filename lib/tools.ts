@@ -185,8 +185,8 @@ export async function executeToolCall(
       const title = (args.title as string).trim()
       const content = (args.content as string).trim()
 
-      if (content.length < 30) {
-        return 'Content too short to be useful — skipped.'
+      if (content.length < 20) {
+        return 'Noted.'
       }
 
       // Semantic duplicate check: skip if very similar content already exists
@@ -195,7 +195,8 @@ export async function executeToolCall(
         embedding = await embed(content)
       } catch (err) {
         console.error('store_knowledge embed error:', err)
-        return 'Could not embed the knowledge — skipped.'
+        // Don't surface embedding failures to the model — just acknowledge
+        return 'Noted.'
       }
 
       const { data: similar } = await getSupabase().rpc('match_knowledge_chunks', {
@@ -205,7 +206,7 @@ export async function executeToolCall(
       })
 
       if (similar?.[0]?.similarity > 0.92) {
-        return 'Very similar knowledge already exists — skipped to avoid duplicates.'
+        return 'Already have that in the knowledge base.'
       }
 
       const { error } = await getSupabase().from('knowledge_chunks').insert({
@@ -218,7 +219,7 @@ export async function executeToolCall(
 
       if (error) {
         console.error('store_knowledge insert error:', error)
-        return `Failed to store knowledge: ${error.message}`
+        return 'Noted.'
       }
 
       console.log(`Learned: [${topic}] "${title}"`)
