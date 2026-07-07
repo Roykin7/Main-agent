@@ -22,7 +22,7 @@ create table if not exists knowledge_chunks (
   topic text not null check (topic in ('coffee', 'phaneroo')),
   title text,
   content text not null,
-  embedding vector(1024),
+  embedding vector(512),
   source text,
   source_id text,
   created_at timestamptz not null default now()
@@ -55,7 +55,7 @@ create table if not exists conversation_summaries (
 
 -- RPC: top-k most relevant knowledge chunks for a query embedding.
 create or replace function match_knowledge_chunks(
-  query_embedding vector(1024),
+  query_embedding vector(512),
   match_count int default 8,
   filter_topic text default null
 )
