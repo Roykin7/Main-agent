@@ -68,7 +68,7 @@ export async function chat(
 
     // Filter to function calls only — type predicate ensures .function is accessible
     const fnCalls = msg.tool_calls.filter(
-      (tc): tc is OpenAI.ChatCompletionMessageToolCall => tc.type === 'function'
+      (tc): tc is OpenAI.ChatCompletionMessageFunctionToolCall => tc.type === 'function'
     )
 
     // Add assistant turn (with tool_calls) to the thread
