@@ -59,7 +59,7 @@ def embed(text: str) -> list:
     res = requests.post(
         'https://api.voyageai.com/v1/embeddings',
         headers={'Authorization': f'Bearer {VOYAGE_KEY}', 'Content-Type': 'application/json'},
-        json={'input': [text], 'model': 'voyage-3'},
+        json={'input': [text], 'model': 'voyage-3-lite'},
         timeout=30,
     )
     res.raise_for_status()
