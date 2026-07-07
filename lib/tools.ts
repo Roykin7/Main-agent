@@ -1,6 +1,8 @@
 import OpenAI from 'openai'
 import { searchKnowledge, getDevotion, type KnowledgeChunk } from './knowledge'
 import { detectScriptureRequest, getVerse, type BibleTranslation } from './bible'
+import { embed } from './embeddings'
+import { getSupabase } from './supabase'
 
 // Uganda is UTC+3
 function ugandaDate(offsetDays = 0): string {
@@ -78,6 +80,34 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'store_knowledge',
+      description:
+        'Save a new fact to the knowledge base. Call this when a user shares specific, useful information about coffee farming/agronomy or Phaneroo Ministries that is not already in the knowledge base. Do NOT store questions, greetings, opinions, or personal details like names or phone numbers.',
+      parameters: {
+        type: 'object',
+        properties: {
+          topic: {
+            type: 'string',
+            enum: ['coffee', 'phaneroo'],
+            description: 'Which domain this knowledge belongs to',
+          },
+          title: {
+            type: 'string',
+            description: 'A short descriptive title for this fact (5–10 words)',
+          },
+          content: {
+            type: 'string',
+            description:
+              'The factual content as a clear, third-person statement. Strip any personal details (names, phone numbers, locations).',
+          },
+        },
+        required: ['topic', 'title', 'content'],
+      },
+    },
+  },
 ]
 
 export async function executeToolCall(
@@ -148,6 +178,51 @@ export async function executeToolCall(
         return `Could not fetch ${reference} in ${translation}. The Bible API may not be configured for this translation.`
       }
       return `${reference} (${translation}): ${verse}`
+    }
+
+    case 'store_knowledge': {
+      const topic = args.topic as 'coffee' | 'phaneroo'
+      const title = (args.title as string).trim()
+      const content = (args.content as string).trim()
+
+      if (content.length < 30) {
+        return 'Content too short to be useful — skipped.'
+      }
+
+      // Semantic duplicate check: skip if very similar content already exists
+      let embedding: number[]
+      try {
+        embedding = await embed(content)
+      } catch (err) {
+        console.error('store_knowledge embed error:', err)
+        return 'Could not embed the knowledge — skipped.'
+      }
+
+      const { data: similar } = await getSupabase().rpc('match_knowledge_chunks', {
+        query_embedding: embedding,
+        match_count: 1,
+        filter_topic: topic,
+      })
+
+      if (similar?.[0]?.similarity > 0.92) {
+        return 'Very similar knowledge already exists — skipped to avoid duplicates.'
+      }
+
+      const { error } = await getSupabase().from('knowledge_chunks').insert({
+        topic,
+        title,
+        content,
+        embedding,
+        source: 'user-contributed',
+      })
+
+      if (error) {
+        console.error('store_knowledge insert error:', error)
+        return `Failed to store knowledge: ${error.message}`
+      }
+
+      console.log(`Learned: [${topic}] "${title}"`)
+      return `Stored "${title}" under ${topic} knowledge.`
     }
 
     default:
