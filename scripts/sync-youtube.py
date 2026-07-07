@@ -56,10 +56,10 @@ def already_stored(source: str, source_id: str) -> bool:
         .select('id')
         .eq('source', source)
         .eq('source_id', source_id)
-        .maybe_single()
+        .limit(1)
         .execute()
     )
-    return res.data is not None
+    return len(res.data) > 0
 
 # ── Transcript helpers ────────────────────────────────────────────────────────
 

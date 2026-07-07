@@ -71,10 +71,10 @@ def already_stored(post_id: str) -> bool:
         .select('id')
         .eq('source', 'twitter')
         .eq('source_id', post_id)
-        .maybe_single()
+        .limit(1)
         .execute()
     )
-    return res.data is not None
+    return len(res.data) > 0
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
