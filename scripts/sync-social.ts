@@ -1,6 +1,6 @@
 /**
- * Fetches new posts from Twitter/X (and optionally Facebook), embeds them
- * with Gemini, and upserts them into the social_posts table.
+ * Fetches new posts from Facebook (Twitter handled by sync-twitter.py),
+ * embeds them with Voyage AI, and upserts into knowledge_chunks.
  *
  * Run manually:  npm run sync-social
  * Runs daily via:  .github/workflows/sync-social.yml
@@ -9,8 +9,6 @@ import { config } from 'dotenv'
 config({ path: '.env.local' })
 
 import { createClient } from '@supabase/supabase-js'
-import { GoogleGenAI } from '@google/genai'
-import { fetchTwitterPosts, type SocialPost } from './fetchers/twitter'
 import { fetchFacebookPosts } from './fetchers/facebook'
 
 const supabase = createClient(
@@ -18,66 +16,65 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
-const genai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY!,
-  httpOptions: { apiVersion: 'v1' },
-})
-
 async function embedText(text: string): Promise<number[]> {
-  const result = await genai.models.embedContent({
-    model: 'gemini-embedding-001',
-    contents: text,
-    config: { outputDimensionality: 768 },
-  })
-  return result.embeddings?.[0]?.values ?? []
-}
-
-async function upsertPost(post: SocialPost, embedding: number[]): Promise<boolean> {
-  const { error } = await supabase.from('social_posts').upsert(
-    {
-      platform: post.platform,
-      post_id: post.post_id,
-      content: post.content,
-      posted_at: post.posted_at,
-      url: post.url,
-      embedding,
+  const res = await fetch('https://api.voyageai.com/v1/embeddings', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.VOYAGE_API_KEY!}`,
+      'Content-Type': 'application/json',
     },
-    { onConflict: 'platform,post_id', ignoreDuplicates: true }
-  )
-  if (error) {
-    console.error(`  upsert error (${post.platform}/${post.post_id}):`, error.message)
-    return false
-  }
-  return true
+    body: JSON.stringify({ input: [text], model: 'voyage-3' }),
+  })
+  if (!res.ok) throw new Error(`Voyage embed error ${res.status}`)
+  const data = await res.json()
+  return data.data[0].embedding as number[]
 }
 
-async function processPosts(posts: SocialPost[]): Promise<{ inserted: number; skipped: number }> {
+async function alreadyStored(platform: string, postId: string): Promise<boolean> {
+  const { data } = await supabase
+    .from('knowledge_chunks')
+    .select('id')
+    .eq('source', platform)
+    .eq('source_id', postId)
+    .maybeSingle()
+  return !!data
+}
+
+async function processPosts(
+  posts: { platform: string; post_id: string; content: string; posted_at?: string; url?: string }[]
+): Promise<{ inserted: number; skipped: number }> {
   let inserted = 0
   let skipped = 0
 
   for (const post of posts) {
-    // Check if already ingested to avoid paying for embeddings on duplicates
-    const { data: existing } = await supabase
-      .from('social_posts')
-      .select('id')
-      .eq('platform', post.platform)
-      .eq('post_id', post.post_id)
-      .maybeSingle()
-
-    if (existing) {
+    if (await alreadyStored(post.platform, post.post_id)) {
       skipped++
       continue
     }
 
     try {
       const embedding = await embedText(post.content)
-      const ok = await upsertPost(post, embedding)
-      if (ok) inserted++
+      const title = post.content.slice(0, 80) + (post.content.length > 80 ? '...' : '')
+
+      const { error } = await supabase.from('knowledge_chunks').insert({
+        topic: 'phaneroo',
+        title,
+        content: post.content,
+        embedding,
+        source: post.platform,
+        source_id: post.post_id,
+      })
+
+      if (error) {
+        console.error(`  upsert error (${post.platform}/${post.post_id}):`, error.message)
+      } else {
+        inserted++
+        console.log(`  [${inserted}] ${title}`)
+      }
     } catch (err) {
       console.error(`  embed error for ${post.platform}/${post.post_id}:`, err)
     }
 
-    // Small delay to stay within Gemini embedding rate limits
     await new Promise((r) => setTimeout(r, 200))
   }
 
@@ -85,57 +82,35 @@ async function processPosts(posts: SocialPost[]): Promise<{ inserted: number; sk
 }
 
 async function main() {
-  console.log('=== ZOE social sync ===')
+  console.log('=== ZOE social sync (Facebook) ===')
+  console.log('  VOYAGE_API_KEY :', process.env.VOYAGE_API_KEY ? 'set' : 'NOT SET')
+  console.log('  SUPABASE_URL   :', process.env.SUPABASE_URL ? 'set' : 'NOT SET')
 
-  // Diagnostic: confirm env vars are loaded (token masked)
-  const twitterToken = process.env.TWITTER_BEARER_TOKEN
-  const twitterUsername = process.env.TWITTER_PHANEROO_USERNAME
-  console.log('\nEnv check:')
-  console.log('  TWITTER_BEARER_TOKEN :', twitterToken ? `set (${twitterToken.length} chars)` : 'NOT SET')
-  console.log('  TWITTER_PHANEROO_USERNAME:', twitterUsername || 'NOT SET')
-  console.log('  GEMINI_API_KEY        :', process.env.GEMINI_API_KEY ? 'set' : 'NOT SET')
-  console.log('  SUPABASE_URL          :', process.env.SUPABASE_URL ? 'set' : 'NOT SET')
-
-  const allPosts: SocialPost[] = []
-
-  // --- Twitter/X ---
-  if (twitterToken && twitterUsername) {
-    console.log(`\nFetching Twitter posts for @${twitterUsername}...`)
-    try {
-      const tweets = await fetchTwitterPosts(twitterUsername, twitterToken)
-      console.log(`  Fetched ${tweets.length} posts after filtering`)
-      allPosts.push(...tweets)
-    } catch (err: any) {
-      console.error('  Twitter fetch failed:', err?.message ?? err)
-    }
-  } else {
-    console.log('\nTwitter: skipped (TWITTER_BEARER_TOKEN or TWITTER_PHANEROO_USERNAME not set)')
-  }
-
-  // --- Facebook ---
   const fbPageId = process.env.FACEBOOK_PAGE_ID
   const fbToken = process.env.FACEBOOK_ACCESS_TOKEN
 
-  if (fbPageId && fbToken) {
-    console.log('\nFetching Facebook posts...')
-    try {
-      const fbPosts = await fetchFacebookPosts(fbPageId, fbToken)
-      console.log(`  Fetched ${fbPosts.length} posts`)
-      allPosts.push(...fbPosts)
-    } catch (err) {
-      console.error('  Facebook fetch failed:', err)
-    }
-  } else {
-    console.log('Facebook: skipped (FACEBOOK_PAGE_ID or FACEBOOK_ACCESS_TOKEN not set)')
-  }
-
-  if (allPosts.length === 0) {
-    console.log('\nNo posts to process.')
+  if (!fbPageId || !fbToken) {
+    console.log('\nFacebook: skipped (FACEBOOK_PAGE_ID or FACEBOOK_ACCESS_TOKEN not set)')
     return
   }
 
-  console.log(`\nProcessing ${allPosts.length} posts (embedding + upsert)...`)
-  const { inserted, skipped } = await processPosts(allPosts)
+  console.log('\nFetching Facebook posts...')
+  let posts: any[] = []
+  try {
+    posts = await fetchFacebookPosts(fbPageId, fbToken)
+    console.log(`  Fetched ${posts.length} posts`)
+  } catch (err: any) {
+    console.error('  Facebook fetch failed:', err?.message ?? err)
+    return
+  }
+
+  if (posts.length === 0) {
+    console.log('No posts to process.')
+    return
+  }
+
+  console.log(`\nProcessing ${posts.length} posts...`)
+  const { inserted, skipped } = await processPosts(posts)
   console.log(`\nDone. Inserted: ${inserted}  Already existed: ${skipped}`)
 }
 

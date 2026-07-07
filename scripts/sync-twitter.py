@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Fetches Phaneroo tweets via twscrape (no API key needed), embeds them
-with Gemini, and upserts into the social_posts table in Supabase.
+with Voyage AI, and upserts into knowledge_chunks in Supabase.
 
 First-time setup — run this once locally to authenticate the scraper account:
   python scripts/sync-twitter.py --setup
@@ -16,12 +16,11 @@ import re
 import time
 import sys
 
+import requests
 from dotenv import load_dotenv
 load_dotenv('.env.local')
 
 from twscrape import API, gather
-from google import genai
-from google.genai import types
 from supabase import create_client
 
 # ── Config ───────────────────────────────────────────────────────────────────
@@ -34,14 +33,13 @@ SCRAPER_EMAIL_PASS   = os.environ.get('TWITTER_SCRAPER_EMAIL_PASSWORD', '')
 
 SUPABASE_URL         = os.environ.get('SUPABASE_URL', '')
 SUPABASE_KEY         = os.environ.get('SUPABASE_SERVICE_ROLE_KEY', '')
-GEMINI_KEY           = os.environ.get('GEMINI_API_KEY', '')
+VOYAGE_KEY           = os.environ.get('VOYAGE_API_KEY', '')
 
 MAX_TWEETS = 100
 
 # ── Clients ──────────────────────────────────────────────────────────────────
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-gemini   = genai.Client(api_key=GEMINI_KEY)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -58,19 +56,21 @@ def is_useful(text: str) -> bool:
     return True
 
 def embed(text: str) -> list:
-    result = gemini.models.embed_content(
-        model='gemini-embedding-001',
-        contents=text,
-        config=types.EmbedContentConfig(output_dimensionality=768),
+    res = requests.post(
+        'https://api.voyageai.com/v1/embeddings',
+        headers={'Authorization': f'Bearer {VOYAGE_KEY}', 'Content-Type': 'application/json'},
+        json={'input': [text], 'model': 'voyage-3'},
+        timeout=30,
     )
-    return result.embeddings[0].values
+    res.raise_for_status()
+    return res.json()['data'][0]['embedding']
 
 def already_stored(post_id: str) -> bool:
     res = (
-        supabase.from_('social_posts')
+        supabase.from_('knowledge_chunks')
         .select('id')
-        .eq('platform', 'twitter')
-        .eq('post_id', post_id)
+        .eq('source', 'twitter')
+        .eq('source_id', post_id)
         .maybe_single()
         .execute()
     )
@@ -101,7 +101,7 @@ async def setup():
 
 
 async def sync():
-    """Fetch new Phaneroo tweets, embed, and store."""
+    """Fetch new Phaneroo tweets, embed, and store in knowledge_chunks."""
     api = API()
 
     accounts = await api.pool.get_all()
@@ -112,7 +112,6 @@ async def sync():
     active = [a for a in accounts if a.active]
     print(f'Using {len(active)}/{len(accounts)} active scraper account(s)')
 
-    # Resolve username → user ID
     user = await api.user_by_login(PHANEROO_USERNAME)
     if not user:
         print(f'ERROR: Could not find Twitter user @{PHANEROO_USERNAME}')
@@ -140,24 +139,22 @@ async def sync():
 
         try:
             embedding = embed(content)
-            supabase.from_('social_posts').upsert(
-                {
-                    'platform':   'twitter',
-                    'post_id':    post_id,
-                    'content':    content,
-                    'posted_at':  tweet.date.isoformat() if tweet.date else None,
-                    'url':        f'https://twitter.com/{PHANEROO_USERNAME}/status/{post_id}',
-                    'embedding':  embedding,
-                },
-                on_conflict='platform,post_id',
-            ).execute()
+            title = content[:80] + ('...' if len(content) > 80 else '')
+            supabase.from_('knowledge_chunks').insert({
+                'topic':     'phaneroo',
+                'title':     title,
+                'content':   content,
+                'embedding': embedding,
+                'source':    'twitter',
+                'source_id': post_id,
+            }).execute()
             inserted += 1
-            print(f'  [{inserted}] {content[:70]}')
+            print(f'  [{inserted}] {title}')
         except Exception as e:
             print(f'  ERROR on tweet {post_id}: {e}')
             errors += 1
 
-        time.sleep(0.3)  # stay within Gemini embedding rate limits
+        time.sleep(0.2)
 
     print(f'\nDone. Inserted: {inserted}  Skipped: {skipped}  Errors: {errors}')
 

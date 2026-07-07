@@ -1,22 +1,13 @@
-import { GoogleGenAI } from '@google/genai'
-
-let client: GoogleGenAI | undefined
-
-function getClient(): GoogleGenAI {
-  if (!client) {
-    client = new GoogleGenAI({
-      apiKey: process.env.GEMINI_API_KEY!,
-      httpOptions: { apiVersion: 'v1' },
-    })
-  }
-  return client
-}
-
 export async function embed(text: string): Promise<number[]> {
-  const result = await getClient().models.embedContent({
-    model: 'gemini-embedding-001',
-    contents: text,
-    config: { outputDimensionality: 768 },
+  const res = await fetch('https://api.voyageai.com/v1/embeddings', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${process.env.VOYAGE_API_KEY!}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ input: [text], model: 'voyage-3' }),
   })
-  return result.embeddings?.[0]?.values ?? []
+  if (!res.ok) throw new Error(`Voyage embed error ${res.status}: ${await res.text()}`)
+  const data = await res.json()
+  return data.data[0].embedding as number[]
 }

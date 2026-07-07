@@ -1,5 +1,6 @@
 -- ZOE database schema
 -- Run this once against your Supabase project (SQL Editor or `supabase db push`).
+-- Embeddings use Voyage AI voyage-3 (1024 dimensions).
 
 create extension if not exists vector;
 
@@ -13,22 +14,28 @@ create table if not exists messages (
 );
 create index if not exists messages_phone_created_at_idx on messages (phone, created_at);
 
--- Knowledge base chunks, retrieved via vector similarity search.
+-- Unified knowledge base: seeded content, social media posts, and user-contributed facts.
+-- source values: 'manual', 'twitter', 'facebook', 'user-contributed'
+-- source_id: used to deduplicate social posts (stores tweet/post ID)
 create table if not exists knowledge_chunks (
   id bigserial primary key,
   topic text not null check (topic in ('coffee', 'phaneroo')),
   title text,
   content text not null,
-  embedding vector(768),
+  embedding vector(1024),
   source text,
+  source_id text,
   created_at timestamptz not null default now()
 );
 create index if not exists knowledge_chunks_embedding_idx
   on knowledge_chunks using ivfflat (embedding vector_cosine_ops)
   with (lists = 100);
+-- Prevents duplicate social posts from being inserted
+create unique index if not exists knowledge_chunks_source_id_idx
+  on knowledge_chunks (source, source_id)
+  where source_id is not null;
 
--- Daily devotions, keyed by date (Phaneroo has posted these since 2013).
--- Empty/sparse for now; bulk-imported in a later phase.
+-- Daily devotions, keyed by date.
 create table if not exists devotions (
   id bigserial primary key,
   devo_date date unique not null,
@@ -39,62 +46,17 @@ create table if not exists devotions (
 );
 create index if not exists devotions_devo_date_idx on devotions (devo_date);
 
--- Social media posts ingested daily from Twitter/X and Facebook.
--- Same 768-dim embedding as knowledge_chunks so the same Gemini model serves both.
-create table if not exists social_posts (
-  id bigserial primary key,
-  platform text not null check (platform in ('twitter', 'facebook')),
-  post_id text not null,
-  content text not null,
-  posted_at timestamptz,
-  url text,
-  embedding vector(768),
-  created_at timestamptz not null default now(),
-  unique (platform, post_id)
-);
-create index if not exists social_posts_embedding_idx
-  on social_posts using ivfflat (embedding vector_cosine_ops)
-  with (lists = 100);
-
-create or replace function match_social_posts(
-  query_embedding vector(768),
-  match_count int default 3
-)
-returns table (
-  id bigint,
-  platform text,
-  content text,
-  url text,
-  posted_at timestamptz,
-  similarity float
-)
-language sql stable
-as $$
-  select
-    id,
-    platform,
-    content,
-    url,
-    posted_at,
-    1 - (embedding <=> query_embedding) as similarity
-  from social_posts
-  order by embedding <=> query_embedding
-  limit match_count;
-$$;
-
--- Rolling summaries for long conversations. Updated every 10 messages once the
--- raw history window fills, so ZOE remembers context beyond the last 20 messages.
+-- Rolling summaries for long conversations.
 create table if not exists conversation_summaries (
   phone text primary key,
   summary text not null,
   updated_at timestamptz not null default now()
 );
 
--- RPC used by lib/knowledge.ts to find the top-k most relevant chunks
--- for a given query embedding, optionally filtered by topic.
+-- RPC: top-k most relevant knowledge chunks for a query embedding.
 create or replace function match_knowledge_chunks(
-  query_embedding vector(768),
-  match_count int default 5,
+  query_embedding vector(1024),
+  match_count int default 8,
   filter_topic text default null
 )
 returns table (
