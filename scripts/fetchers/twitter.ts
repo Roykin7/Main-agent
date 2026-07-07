@@ -54,8 +54,9 @@ export async function fetchTwitterPosts(
   })
   const tweetsResp = await twitterGet(`/users/${userId}/tweets?${params}`, bearerToken)
   const tweets: any[] = tweetsResp?.data ?? []
+  console.log(`  API returned ${tweets.length} raw tweets for user ID ${userId}`)
 
-  return tweets
+  const results = tweets
     .map((t) => ({
       platform: 'twitter' as const,
       post_id: t.id,
@@ -64,4 +65,7 @@ export async function fetchTwitterPosts(
       url: `https://twitter.com/${username}/status/${t.id}`,
     }))
     .filter((p) => isUseful(p.content))
+
+  console.log(`  After filtering: ${results.length} posts kept`)
+  return results
 }

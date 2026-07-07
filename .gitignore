@@ -17,6 +17,9 @@
 *.pem
 npm-debug.log*
 
+# twscrape auth database (contains Twitter session tokens — never commit)
+accounts.db
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

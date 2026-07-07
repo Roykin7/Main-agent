@@ -87,20 +87,26 @@ async function processPosts(posts: SocialPost[]): Promise<{ inserted: number; sk
 async function main() {
   console.log('=== ZOE social sync ===')
 
+  // Diagnostic: confirm env vars are loaded (token masked)
+  const twitterToken = process.env.TWITTER_BEARER_TOKEN
+  const twitterUsername = process.env.TWITTER_PHANEROO_USERNAME
+  console.log('\nEnv check:')
+  console.log('  TWITTER_BEARER_TOKEN :', twitterToken ? `set (${twitterToken.length} chars)` : 'NOT SET')
+  console.log('  TWITTER_PHANEROO_USERNAME:', twitterUsername || 'NOT SET')
+  console.log('  GEMINI_API_KEY        :', process.env.GEMINI_API_KEY ? 'set' : 'NOT SET')
+  console.log('  SUPABASE_URL          :', process.env.SUPABASE_URL ? 'set' : 'NOT SET')
+
   const allPosts: SocialPost[] = []
 
   // --- Twitter/X ---
-  const twitterToken = process.env.TWITTER_BEARER_TOKEN
-  const twitterUsername = process.env.TWITTER_PHANEROO_USERNAME
-
   if (twitterToken && twitterUsername) {
     console.log(`\nFetching Twitter posts for @${twitterUsername}...`)
     try {
       const tweets = await fetchTwitterPosts(twitterUsername, twitterToken)
-      console.log(`  Fetched ${tweets.length} tweets`)
+      console.log(`  Fetched ${tweets.length} posts after filtering`)
       allPosts.push(...tweets)
-    } catch (err) {
-      console.error('  Twitter fetch failed:', err)
+    } catch (err: any) {
+      console.error('  Twitter fetch failed:', err?.message ?? err)
     }
   } else {
     console.log('\nTwitter: skipped (TWITTER_BEARER_TOKEN or TWITTER_PHANEROO_USERNAME not set)')
