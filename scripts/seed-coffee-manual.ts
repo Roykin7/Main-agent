@@ -174,7 +174,7 @@ const entries: SeedEntry[] = [
 ]
 
 async function main() {
-  const { embed } = await import('../lib/gemini')
+  const { embed } = await import('../lib/embeddings')
   const { getSupabase } = await import('../lib/supabase')
   const supabase = getSupabase()
 
