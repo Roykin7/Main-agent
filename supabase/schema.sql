@@ -39,6 +39,49 @@ create table if not exists devotions (
 );
 create index if not exists devotions_devo_date_idx on devotions (devo_date);
 
+-- Social media posts ingested daily from Twitter/X and Facebook.
+-- Same 768-dim embedding as knowledge_chunks so the same Gemini model serves both.
+create table if not exists social_posts (
+  id bigserial primary key,
+  platform text not null check (platform in ('twitter', 'facebook')),
+  post_id text not null,
+  content text not null,
+  posted_at timestamptz,
+  url text,
+  embedding vector(768),
+  created_at timestamptz not null default now(),
+  unique (platform, post_id)
+);
+create index if not exists social_posts_embedding_idx
+  on social_posts using ivfflat (embedding vector_cosine_ops)
+  with (lists = 100);
+
+create or replace function match_social_posts(
+  query_embedding vector(768),
+  match_count int default 3
+)
+returns table (
+  id bigint,
+  platform text,
+  content text,
+  url text,
+  posted_at timestamptz,
+  similarity float
+)
+language sql stable
+as $$
+  select
+    id,
+    platform,
+    content,
+    url,
+    posted_at,
+    1 - (embedding <=> query_embedding) as similarity
+  from social_posts
+  order by embedding <=> query_embedding
+  limit match_count;
+$$;
+
 -- Rolling summaries for long conversations. Updated every 10 messages once the
 -- raw history window fills, so ZOE remembers context beyond the last 20 messages.
 create table if not exists conversation_summaries (

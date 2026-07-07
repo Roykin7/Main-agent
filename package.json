@@ -10,7 +10,8 @@
     "seed": "tsx scripts/seed-knowledge.ts",
     "ingest-devotions": "tsx scripts/ingest-devotions.ts",
     "seed:manual": "tsx scripts/seed-coffee-manual.ts",
-    "seed:phaneroo": "tsx scripts/seed-phaneroo.ts"
+    "seed:phaneroo": "tsx scripts/seed-phaneroo.ts",
+    "sync-social": "tsx scripts/sync-social.ts"
   },
   "dependencies": {
     "@google/genai": "^2.8.0",

@@ -3,6 +3,7 @@ import { embed, KnowledgeChunk } from './gemini'
 import { detectScriptureRequest, getVerse } from './bible'
 
 const MATCH_COUNT = 5
+const SOCIAL_MATCH_COUNT = 3
 
 // Uganda is UTC+3
 function ugandaDateString(offsetDays = 0): string {
@@ -64,17 +65,36 @@ export async function retrieveContext(query: string): Promise<KnowledgeChunk[]> 
 
   try {
     const queryEmbedding = await embed(query)
-    const { data, error } = await getSupabase().rpc('match_knowledge_chunks', {
-      query_embedding: queryEmbedding,
-      match_count: MATCH_COUNT,
-      filter_topic: null,
-    })
-    if (error) {
-      console.error('retrieveContext rpc error:', error)
+
+    const [kbResult, socialResult] = await Promise.all([
+      getSupabase().rpc('match_knowledge_chunks', {
+        query_embedding: queryEmbedding,
+        match_count: MATCH_COUNT,
+        filter_topic: null,
+      }),
+      getSupabase().rpc('match_social_posts', {
+        query_embedding: queryEmbedding,
+        match_count: SOCIAL_MATCH_COUNT,
+      }),
+    ])
+
+    if (kbResult.error) {
+      console.error('retrieveContext kb rpc error:', kbResult.error)
     } else {
       chunks.push(
-        ...(data ?? []).map((row: any) => ({
+        ...(kbResult.data ?? []).map((row: any) => ({
           title: row.title,
+          content: row.content,
+        }))
+      )
+    }
+
+    if (socialResult.error) {
+      console.error('retrieveContext social rpc error:', socialResult.error)
+    } else {
+      chunks.push(
+        ...(socialResult.data ?? []).map((row: any) => ({
+          title: `Phaneroo on ${row.platform === 'twitter' ? 'Twitter/X' : 'Facebook'}`,
           content: row.content,
         }))
       )
