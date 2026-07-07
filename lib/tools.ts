@@ -4,6 +4,19 @@ import { detectScriptureRequest, getVerse, type BibleTranslation } from './bible
 import { embed } from './embeddings'
 import { getSupabase } from './supabase'
 
+function degreesToCompass(deg: number): string {
+  const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
+  return dirs[Math.round(deg / 45) % 8]
+}
+
+async function apiNinjas(path: string): Promise<any> {
+  const res = await fetch(`https://api.api-ninjas.com/v1/${path}`, {
+    headers: { 'X-Api-Key': process.env.API_NINJAS_KEY! },
+  })
+  if (!res.ok) throw new Error(`API Ninjas ${res.status}`)
+  return res.json()
+}
+
 // Uganda is UTC+3
 function ugandaDate(offsetDays = 0): string {
   const ms = Date.now() + 3 * 3600_000 + offsetDays * 86400_000
@@ -77,6 +90,43 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
           },
         },
         required: ['reference'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_weather',
+      description:
+        'Get current weather conditions for a city or town. Call this whenever weather is relevant to farming advice — before recommending spraying, harvesting, drying coffee, or assessing disease risk.',
+      parameters: {
+        type: 'object',
+        properties: {
+          city: {
+            type: 'string',
+            description: 'City or town name, e.g. "Kampala", "Mbale", "Mbarara", "Fort Portal"',
+          },
+        },
+        required: ['city'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_commodity_price',
+      description:
+        'Get the latest international market price for an agricultural commodity. Use for coffee price context (Arabica or Robusta futures) or other commodities relevant to the farmer.',
+      parameters: {
+        type: 'object',
+        properties: {
+          commodity: {
+            type: 'string',
+            description:
+              'Commodity name. Use "coffee" for Arabica Coffee C futures, "robusta coffee" for Robusta, "sugar" for sugar, etc.',
+          },
+        },
+        required: ['commodity'],
       },
     },
   },
@@ -178,6 +228,45 @@ export async function executeToolCall(
         return `Could not fetch ${reference} in ${translation}. The Bible API may not be configured for this translation.`
       }
       return `${reference} (${translation}): ${verse}`
+    }
+
+    case 'get_weather': {
+      const city = args.city as string
+      let data: any
+      try {
+        data = await apiNinjas(`weather?city=${encodeURIComponent(city)}`)
+      } catch {
+        return `Could not get weather for ${city} right now.`
+      }
+      const wind = degreesToCompass(data.wind_degrees)
+      const rainHint =
+        data.cloud_pct > 70
+          ? ' Heavy cloud cover — rain possible.'
+          : data.cloud_pct > 40
+          ? ' Partly cloudy.'
+          : ' Clear skies.'
+      return (
+        `Current weather in ${city}: ${data.temp}°C (feels like ${data.feels_like}°C). ` +
+        `Humidity ${data.humidity}%. Wind ${data.wind_speed} m/s ${wind}.` +
+        `${rainHint} Today's range: ${data.min_temp}–${data.max_temp}°C.`
+      )
+    }
+
+    case 'get_commodity_price': {
+      const commodity = args.commodity as string
+      let data: any
+      try {
+        data = await apiNinjas(`commodityprice?name=${encodeURIComponent(commodity)}`)
+      } catch {
+        return `Could not get price for ${commodity} right now.`
+      }
+      if (!data?.price) return `No price data found for "${commodity}".`
+      const updated = new Date(data.updated * 1000).toLocaleDateString('en-UG', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      })
+      return `${data.name}: ${data.price} ${data.currency} on ${data.exchange} (updated ${updated})`
     }
 
     case 'store_knowledge': {
