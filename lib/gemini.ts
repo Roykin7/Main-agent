@@ -75,6 +75,7 @@ export async function chat(
 
     // Execute every requested tool and add results
     for (const toolCall of msg.tool_calls) {
+      if (toolCall.type !== 'function') continue
       console.log(`Tool: ${toolCall.function.name}(${toolCall.function.arguments})`)
       let result: string
       try {
