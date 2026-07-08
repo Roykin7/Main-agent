@@ -134,6 +134,25 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'web_search',
+      description:
+        'Search the web for current information not available in the knowledge base — breaking news about Uganda coffee markets, recent UCDA or MAAIF announcements, current disease outbreak alerts, live prices at Kampala markets, or any topic that needs up-to-date information. Use this when the knowledge base returns nothing useful or the question is clearly about recent/current events.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description:
+              'Specific search query with context, e.g. "Uganda Arabica coffee farmgate price July 2026" or "Coffee Berry Disease outbreak Mt Elgon 2026" — not just a single keyword.',
+          },
+        },
+        required: ['query'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'remember_user_fact',
       description:
         'Remember a personal fact about THIS specific user — their farm location, crop varieties, farm size, cooperative they belong to, challenges they face, or anything they want ZOE to remember about them personally across conversations. Different from store_knowledge, which stores general facts for everyone. Call this when a user shares something about themselves or explicitly asks you to remember something.',
@@ -288,6 +307,38 @@ export async function executeToolCall(
         year: 'numeric',
       })
       return `${data.name}: ${data.price} ${data.currency} on ${data.exchange} (updated ${updated})`
+    }
+
+    case 'web_search': {
+      const query = args.query as string
+      const apiKey = process.env.TAVILY_API_KEY
+      if (!apiKey) return 'Web search is not configured (missing TAVILY_API_KEY).'
+
+      try {
+        const res = await fetch('https://api.tavily.com/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            api_key: apiKey,
+            query,
+            search_depth: 'basic',
+            max_results: 4,
+            include_answer: false,
+          }),
+        })
+        if (!res.ok) throw new Error(`Tavily ${res.status}`)
+        const data = await res.json()
+        const results: Array<{ title: string; content: string; url: string }> =
+          data.results ?? []
+        if (results.length === 0) return 'No web results found for that query.'
+        return results
+          .slice(0, 4)
+          .map((r) => `${r.title}\n${r.content}`)
+          .join('\n---\n')
+      } catch (err) {
+        console.error('web_search error:', err)
+        return `Web search failed — answer from knowledge base instead.`
+      }
     }
 
     case 'remember_user_fact': {

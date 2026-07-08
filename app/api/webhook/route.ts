@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { verifySignature, parseIncomingText, sendText } from '@/lib/whatsapp'
+import { verifySignature, parseIncomingMessage, downloadMedia, sendText } from '@/lib/whatsapp'
 import { chat } from '@/lib/gemini'
 import { getConversationContext, saveMessage, maybeUpdateSummary } from '@/lib/messages'
 import { loadUserProfile } from '@/lib/user-profile'
@@ -26,13 +26,13 @@ export async function POST(req: NextRequest) {
   }
 
   const payload = JSON.parse(rawBody)
-  const incoming = parseIncomingText(payload)
+  const incoming = parseIncomingMessage(payload)
 
   if (!incoming) {
     return NextResponse.json({ ok: true })
   }
 
-  const { from, text } = incoming
+  const { from, text, mediaId } = incoming
 
   try {
     console.log('Step 1: fetching context for', from)
@@ -42,10 +42,24 @@ export async function POST(req: NextRequest) {
     ])
     console.log('Step 2: history', history.length, 'msgs, summary', !!summary, 'profile facts', userProfile.length)
 
-    await saveMessage(from, 'user', text)
+    // Download image if present (non-blocking failure — falls back to text-only)
+    let imageBase64: string | undefined
+    let imageMimeType: string | undefined
+    if (mediaId) {
+      console.log('Step 2b: downloading image', mediaId)
+      const media = await downloadMedia(mediaId)
+      if (media) {
+        imageBase64 = media.base64
+        imageMimeType = media.mimeType
+        console.log('Step 2b: image downloaded', imageMimeType, imageBase64.length, 'bytes b64')
+      }
+    }
+
+    const messageText = text || (imageBase64 ? '[image]' : '')
+    await saveMessage(from, 'user', messageText)
     console.log('Step 3: saved user message')
 
-    const reply = await chat(history, text, summary, from, userProfile)
+    const reply = await chat(history, text, summary, from, userProfile, imageBase64, imageMimeType)
     console.log('Step 4: got reply:', reply?.slice(0, 80))
 
     await sendText(from, reply)

@@ -25,6 +25,7 @@ const INFO_TOOLS = new Set([
   'get_bible_verse',
   'get_weather',
   'get_commodity_price',
+  'web_search',
 ])
 
 /**
@@ -88,7 +89,9 @@ export async function chat(
   userText: string,
   summary: string | null = null,
   phone?: string,
-  userProfile?: string[]
+  userProfile?: string[],
+  imageBase64?: string,
+  imageMimeType?: string
 ): Promise<string> {
   const messages: OpenAI.ChatCompletionMessageParam[] = [
     { role: 'system', content: ZOE_SYSTEM_PROMPT },
@@ -116,7 +119,20 @@ export async function chat(
     }))
   )
 
-  messages.push({ role: 'user', content: userText })
+  if (imageBase64) {
+    messages.push({
+      role: 'user',
+      content: [
+        { type: 'text', text: userText || 'Please look at this image carefully.' },
+        {
+          type: 'image_url',
+          image_url: { url: `data:${imageMimeType ?? 'image/jpeg'};base64,${imageBase64}` },
+        },
+      ],
+    })
+  } else {
+    messages.push({ role: 'user', content: userText })
+  }
 
   const model = process.env.OPENROUTER_MODEL ?? 'openai/gpt-4o-mini'
 
