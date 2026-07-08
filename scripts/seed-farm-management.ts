@@ -1,12 +1,7 @@
 /**
- * Seeds Elitesuccess Farms / Yegon Gilbert farm management lesson series
- * into ZOE's knowledge base, plus general agribusiness cash flow wisdom.
- * These cover financial planning, budgeting, value chains, risk, marketing,
- * labour, technology — applicable to Uganda coffee and general agribusiness.
- *
- * Sources:
- *   - Elitesuccess Farms, Yegon Gilbert — LinkedIn Farm Management Series (Lessons 4–25)
- *   - General agribusiness financial principles
+ * Seeds farm management and agribusiness knowledge into ZOE's knowledge base.
+ * Covers financial planning, budgeting, value chains, risk, marketing,
+ * labour, and technology — applicable to Uganda coffee and general agribusiness.
  *
  * Usage:
  *   npm run seed:farm-management
@@ -48,8 +43,7 @@ When you understand all three, you stop panicking and start managing like a stra
   {
     id: 'farm-budgeting',
     title: 'Farm Budgeting & Financial Planning — The Backbone of Profitable Farming',
-    content: `Many farms fail not because yields are low, but because money is poorly planned and poorly tracked. A farm budget is not paperwork — it is a profit control tool. (Source: Elitesuccess Farms, Yegon Gilbert)
-
+    content: `Many farms fail not because yields are low, but because money is poorly planned and poorly tracked. A farm budget is not paperwork — it is a profit control tool.
 What is a farm budget? A financial plan estimating: all costs of production, expected income, and whether the enterprise will be profitable — BEFORE you start.
 
 The key question a budget answers: "Will this farm enterprise make money?"
@@ -86,8 +80,7 @@ Smart budgeting tips: Budget before every season. Separate personal and farm mon
   {
     id: 'financial-metrics-track',
     title: '5 Key Financial Numbers Every Farmer Must Track',
-    content: `Profit in agriculture does not always come from producing more. Sometimes it comes from understanding your numbers better than others. Farms that increase production can still struggle financially — while smaller farms remain profitable because they understand their numbers. (Source: Elitesuccess Farms, Yegon Gilbert)
-
+    content: `Profit in agriculture does not always come from producing more. Sometimes it comes from understanding your numbers better than others. Farms that increase production can still struggle financially — while smaller farms remain profitable because they understand their numbers.
 The 5 numbers every farmer (including coffee farmers) must always track:
 
 1. COST OF PRODUCTION PER UNIT: Do you know exactly how much it costs to produce 1 kg of coffee cherries? 1 bag of processed coffee? Without this, pricing becomes guesswork. Calculate: total costs (inputs + labour + depreciation) ÷ total output. For Uganda coffee: if your 0.5 ha costs 500,000 UGX and produces 200 kg of dry coffee, your cost is 2,500 UGX/kg.
@@ -105,8 +98,7 @@ Summary: Agriculture is not just physical work — it is financial discipline. T
   {
     id: 'expansion-strategy',
     title: 'When and How to Scale Your Farm Business — Expansion & Investment Readiness',
-    content: `Many farmers expand acreage, hire more workers, and increase production — but their profit doesn't grow. Sometimes expansion multiplies expenses in disguise. (Source: Elitesuccess Farms, Yegon Gilbert)
-
+    content: `Many farmers expand acreage, hire more workers, and increase production — but their profit doesn't grow. Sometimes expansion multiplies expenses in disguise.
 The key lesson: Expansion doesn't fix inefficiency — it magnifies it.
 
 When is a farm READY to expand?
@@ -143,8 +135,7 @@ Remember: Growth is not always physical. Sometimes improved margins, reduced los
   {
     id: 'value-chains-marketing',
     title: 'Agribusiness Value Chains, Marketing & Value Addition — From Farm Gate to Profit',
-    content: `Agriculture does not end at production. Profitability is largely determined by how well a farm integrates into the value chain. Many farmers focus on production efficiency but neglect market positioning — yet markets determine price, demand, and financial success. (Source: Elitesuccess Farms, Yegon Gilbert)
-
+    content: `Agriculture does not end at production. Profitability is largely determined by how well a farm integrates into the value chain. Many farmers focus on production efficiency but neglect market positioning — yet markets determine price, demand, and financial success.
 What is an agribusiness value chain? The full range of activities from farm to final consumer: input supply → production → processing → distribution → marketing/retail. Each stage adds value AND introduces costs and risks.
 
 Why value chains matter for Uganda coffee farmers:
@@ -179,8 +170,7 @@ Key insight: Production creates output. Value chains create profit. Farms that u
   {
     id: 'risk-management-insurance',
     title: 'Farm Risk Management & Insurance — Protecting Your Agricultural Investment',
-    content: `Farming is exposed to many uncertainties — weather, pests, diseases, market fluctuations. Successful farmers do not avoid risks, they manage them. (Source: Elitesuccess Farms, Yegon Gilbert)
-
+    content: `Farming is exposed to many uncertainties — weather, pests, diseases, market fluctuations. Successful farmers do not avoid risks, they manage them.
 Types of farm risks every Uganda coffee farmer faces:
 
 Production risks:
@@ -223,8 +213,7 @@ Key rule: Risk is part of farming — but losses don't have to be catastrophic. 
   {
     id: 'farm-records-financial-statements',
     title: 'Farm Records, Budgets & Financial Statements — The Three Pillars of Farm Financial Control',
-    content: `Farm records, budgets, and financial statements are interconnected tools that work together to support planning, control, and decision-making. (Source: Elitesuccess Farms, Yegon Gilbert)
-
+    content: `Farm records, budgets, and financial statements are interconnected tools that work together to support planning, control, and decision-making.
 The management flow: Farm Records → Farm Budgets → Financial Statements → Farm Decisions
 
 Farm Records (the foundation):
@@ -260,8 +249,7 @@ Rule: A farm without records is a gamble. A farm with records is a business. Bud
   {
     id: 'labour-management',
     title: 'Farm Labour & Human Resource Management — Planning and Motivating Your Farm Workforce',
-    content: `Even with good land, capital, and inputs, a farm cannot succeed without well-managed labour. Labour is often the largest variable cost on a Uganda coffee farm. (Source: Elitesuccess Farms, Yegon Gilbert)
-
+    content: `Even with good land, capital, and inputs, a farm cannot succeed without well-managed labour. Labour is often the largest variable cost on a Uganda coffee farm.
 Types of farm labour:
 - Family labour: Provided by household members, common on smallholder farms. Track this — it has real economic value even if unpaid.
 - Permanent labour: Long-term employees (supervisors, permanent farm hands). Paid monthly. For larger farms managing multiple processes.
@@ -303,8 +291,7 @@ Uganda context: Coffee harvest in most regions competes with other labour needs.
   {
     id: 'technology-climate-smart',
     title: 'Climate-Smart Agriculture & Technology in Modern Farm Management',
-    content: `Climate change has increased uncertainty in rainfall patterns, temperature, and extreme weather events. Modern farm management requires systems that adapt, mitigate risk, and sustain productivity under changing conditions. (Source: Elitesuccess Farms, Yegon Gilbert)
-
+    content: `Climate change has increased uncertainty in rainfall patterns, temperature, and extreme weather events. Modern farm management requires systems that adapt, mitigate risk, and sustain productivity under changing conditions.
 Climate-Smart Agriculture (CSA) — what it means:
 CSA is not a single technique but an integrated approach aiming to:
 1. Increase agricultural productivity
@@ -337,8 +324,7 @@ Economic perspective: Climate-smart practices are not only environmental — the
   {
     id: 'agribusiness-finance-investment',
     title: 'Agribusiness Finance & Investment Strategy — Accessing Capital and Growing Sustainably',
-    content: `Successful farming is not driven by production alone — it is driven by financial discipline. Many farms generate output but fail to build wealth due to weak financial planning and poor capital allocation. (Source: Elitesuccess Farms, Yegon Gilbert)
-
+    content: `Successful farming is not driven by production alone — it is driven by financial discipline. Many farms generate output but fail to build wealth due to weak financial planning and poor capital allocation.
 Sources of farm finance in Uganda:
 1. Personal savings and reinvestment — safest, no interest, but slow
 2. SACCOs and cooperatives — lower interest rates, group guarantee; Uganda has many coffee cooperatives with financial services
