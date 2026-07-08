@@ -13,7 +13,8 @@
     "seed:phaneroo": "tsx scripts/seed-phaneroo.ts",
     "sync-social": "tsx scripts/sync-social.ts",
     "ingest-teachings": "tsx scripts/ingest-teachings.ts",
-    "verify-sync": "tsx scripts/verify-sync.ts"
+    "verify-sync": "tsx scripts/verify-sync.ts",
+    "seed:cc-toolbox": "tsx scripts/seed-cc-toolbox.ts"
   },
   "dependencies": {
     "@google/genai": "^2.8.0",
