@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { verifySignature, parseIncomingText, sendText } from '@/lib/whatsapp'
 import { chat } from '@/lib/gemini'
 import { getConversationContext, saveMessage, maybeUpdateSummary } from '@/lib/messages'
+import { loadUserProfile } from '@/lib/user-profile'
 
 export async function GET(req: NextRequest) {
   const searchParams = req.nextUrl.searchParams
@@ -35,13 +36,16 @@ export async function POST(req: NextRequest) {
 
   try {
     console.log('Step 1: fetching context for', from)
-    const { summary, messages: history, totalCount } = await getConversationContext(from)
-    console.log('Step 2: history', history.length, 'msgs, summary', !!summary)
+    const [{ summary, messages: history, totalCount }, userProfile] = await Promise.all([
+      getConversationContext(from),
+      loadUserProfile(from),
+    ])
+    console.log('Step 2: history', history.length, 'msgs, summary', !!summary, 'profile facts', userProfile.length)
 
     await saveMessage(from, 'user', text)
     console.log('Step 3: saved user message')
 
-    const reply = await chat(history, text, summary)
+    const reply = await chat(history, text, summary, from, userProfile)
     console.log('Step 4: got reply:', reply?.slice(0, 80))
 
     await sendText(from, reply)

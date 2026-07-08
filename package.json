@@ -12,7 +12,8 @@
     "seed:manual": "tsx scripts/seed-coffee-manual.ts",
     "seed:phaneroo": "tsx scripts/seed-phaneroo.ts",
     "sync-social": "tsx scripts/sync-social.ts",
-    "ingest-teachings": "tsx scripts/ingest-teachings.ts"
+    "ingest-teachings": "tsx scripts/ingest-teachings.ts",
+    "verify-sync": "tsx scripts/verify-sync.ts"
   },
   "dependencies": {
     "@google/genai": "^2.8.0",

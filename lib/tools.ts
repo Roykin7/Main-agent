@@ -3,6 +3,7 @@ import { searchKnowledge, getDevotion, type KnowledgeChunk } from './knowledge'
 import { detectScriptureRequest, getVerse, type BibleTranslation } from './bible'
 import { embed } from './embeddings'
 import { getSupabase } from './supabase'
+import { saveUserFact } from './user-profile'
 
 function degreesToCompass(deg: number): string {
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
@@ -133,6 +134,25 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
+      name: 'remember_user_fact',
+      description:
+        'Remember a personal fact about THIS specific user — their farm location, crop varieties, farm size, cooperative they belong to, challenges they face, or anything they want ZOE to remember about them personally across conversations. Different from store_knowledge, which stores general facts for everyone. Call this when a user shares something about themselves or explicitly asks you to remember something.',
+      parameters: {
+        type: 'object',
+        properties: {
+          fact: {
+            type: 'string',
+            description:
+              'The fact to remember about this user, as a clear third-person statement. E.g. "Grows Arabica coffee in Mbale at 1600m elevation" or "Member of Bugisu Cooperative Union" or "Has a 2-acre farm and struggles with CBD".',
+          },
+        },
+        required: ['fact'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'store_knowledge',
       description:
         'Save a new fact to the knowledge base. Call this when a user shares specific, useful information about coffee farming/agronomy or Phaneroo Ministries that is not already in the knowledge base. Do NOT store questions, greetings, opinions, or personal details like names or phone numbers.',
@@ -162,7 +182,8 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
 
 export async function executeToolCall(
   name: string,
-  args: Record<string, any>
+  args: Record<string, any>,
+  context?: { phone?: string }
 ): Promise<string> {
   switch (name) {
     case 'search_knowledge': {
@@ -267,6 +288,20 @@ export async function executeToolCall(
         year: 'numeric',
       })
       return `${data.name}: ${data.price} ${data.currency} on ${data.exchange} (updated ${updated})`
+    }
+
+    case 'remember_user_fact': {
+      const fact = (args.fact as string)?.trim()
+      if (!fact || fact.length < 10) return 'Noted.'
+      if (!context?.phone) return 'Noted.'
+      try {
+        await saveUserFact(context.phone, fact)
+        console.log(`User fact saved [${context.phone}]: "${fact}"`)
+        return `Remembered: ${fact}`
+      } catch (err) {
+        console.error('remember_user_fact error:', err)
+        return 'Noted.'
+      }
     }
 
     case 'store_knowledge': {
