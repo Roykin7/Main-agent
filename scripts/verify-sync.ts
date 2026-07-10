@@ -19,17 +19,21 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 )
 
-function ugandaDate(): string {
-  const ms = Date.now() + 3 * 3600_000
+function ugandaDate(offsetDays = 0): string {
+  const ms = Date.now() + 3 * 3600_000 + offsetDays * 86400_000
   return new Date(ms).toISOString().split('T')[0]
 }
 
-async function checkTodaysDevotion(): Promise<boolean> {
-  const today = ugandaDate()
+async function checkRecentDevotion(): Promise<boolean> {
+  // Accept any devotion published in the last 10 days — Phaneroo may publish
+  // ahead or behind by a few days, and the workflow runs before publishing time.
+  const tenDaysAgo = ugandaDate(-10)
   const { data, error } = await supabase
     .from('devotions')
     .select('devo_date')
-    .eq('devo_date', today)
+    .gte('devo_date', tenDaysAgo)
+    .order('devo_date', { ascending: false })
+    .limit(1)
     .maybeSingle()
 
   if (error) {
@@ -37,10 +41,10 @@ async function checkTodaysDevotion(): Promise<boolean> {
     return false
   }
   if (!data) {
-    console.error(`  FAIL: No devotion found for today (${today}).`)
+    console.error(`  FAIL: No devotion found in the last 10 days (since ${tenDaysAgo}).`)
     return false
   }
-  console.log(`  OK: Devotion for ${today} is present.`)
+  console.log(`  OK: Most recent devotion is ${data.devo_date}.`)
   return true
 }
 
@@ -67,7 +71,7 @@ async function checkRecentChunks(): Promise<boolean> {
 async function main() {
   console.log('=== ZOE sync verification ===')
   const results = await Promise.all([
-    checkTodaysDevotion(),
+    checkRecentDevotion(),
     checkRecentChunks(),
   ])
 
