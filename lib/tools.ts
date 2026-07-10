@@ -231,7 +231,7 @@ export async function executeToolCall(
         return `Could not fetch devotion for ${date}.`
       }
       if (!devotion) {
-        return `No devotion found for ${date}. Let the user know and suggest they check phaneroo.org.`
+        return `NO_DEVOTION_IN_DB:${date} — not found in the structured devotions table. Try searching the knowledge base with search_knowledge for "Phaneroo devotion ${date}" or the topic the user mentioned — it may have come in via Facebook or other social posts.`
       }
       const [y, m, d] = date.split('-').map(Number)
       const displayDate = new Date(y, m - 1, d).toLocaleDateString('en-UG', {
