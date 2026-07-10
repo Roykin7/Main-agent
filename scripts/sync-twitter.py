@@ -106,10 +106,14 @@ async def sync():
 
     accounts = await api.pool.get_all()
     if not accounts:
-        print('ERROR: No accounts in accounts.db — run --setup first.')
-        sys.exit(1)
+        print('WARN: No accounts in accounts.db — run --setup first. Skipping Twitter sync.')
+        sys.exit(0)
 
     active = [a for a in accounts if a.active]
+    if not active:
+        print('WARN: All scraper accounts are inactive — session may have expired. Skipping Twitter sync.')
+        sys.exit(0)
+
     print(f'Using {len(active)}/{len(accounts)} active scraper account(s)')
 
     user = await api.user_by_login(PHANEROO_USERNAME)

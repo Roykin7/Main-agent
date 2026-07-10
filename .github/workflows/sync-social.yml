@@ -38,6 +38,7 @@ jobs:
 
       # ── Sync Twitter/X posts ─────────────────────────────────────────────
       - name: Sync Twitter/X posts
+        continue-on-error: true   # session can expire; don't block devotions/teachings
         run: python scripts/sync-twitter.py
         env:
           TWITTER_PHANEROO_USERNAME: ${{ secrets.TWITTER_PHANEROO_USERNAME }}
@@ -77,6 +78,7 @@ jobs:
 
       # ── Sync YouTube sermons (titles + latest 5 transcripts) ─────────────
       - name: Sync YouTube sermons
+        continue-on-error: true   # non-critical; don't block verify step
         run: python scripts/sync-youtube.py
         env:
           VOYAGE_API_KEY: ${{ secrets.VOYAGE_API_KEY }}
