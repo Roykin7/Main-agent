@@ -1,9 +1,13 @@
 /**
- * Fetches new posts from Facebook (Twitter handled by sync-twitter.py),
+ * Fetches ALL posts from Phaneroo's Facebook page via the Graph API,
  * embeds them with Voyage AI, and upserts into knowledge_chunks.
  *
+ * On first run: walks back through full post history (paginated, up to 10,000 posts).
+ * On subsequent runs: only fetches posts newer than the most recently stored FB post,
+ * so each run is fast and cheap.
+ *
  * Run manually:  npm run sync-social
- * Runs daily via:  .github/workflows/sync-social.yml
+ * Runs on schedule via: .github/workflows/sync-social.yml
  */
 import { config } from 'dotenv'
 config({ path: '.env.local' })
@@ -40,8 +44,23 @@ async function alreadyStored(platform: string, postId: string): Promise<boolean>
   return !!data
 }
 
+/**
+ * Finds the posted_at date of the most recently stored post for a given platform.
+ * Used as the `since` cutoff so we only fetch new posts on each run.
+ */
+async function getMostRecentPostDate(platform: string): Promise<string | null> {
+  const { data } = await supabase
+    .from('knowledge_chunks')
+    .select('created_at')
+    .eq('source', platform)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  return data?.created_at ?? null
+}
+
 async function processPosts(
-  posts: { platform: string; post_id: string; content: string; posted_at?: string; url?: string }[]
+  posts: { platform: string; post_id: string; content: string; posted_at?: string | null; url?: string | null }[]
 ): Promise<{ inserted: number; skipped: number }> {
   let inserted = 0
   let skipped = 0
@@ -94,18 +113,25 @@ async function main() {
     return
   }
 
-  console.log('\nFetching Facebook posts...')
+  // Find the most recent post we already have so we only fetch newer ones
+  const sinceDate = await getMostRecentPostDate('facebook')
+  if (sinceDate) {
+    console.log(`\nIncremental sync — fetching Facebook posts newer than ${sinceDate}`)
+  } else {
+    console.log('\nFirst run — fetching full Facebook post history (this may take a while)')
+  }
+
   let posts: any[] = []
   try {
-    posts = await fetchFacebookPosts(fbPageId, fbToken)
+    posts = await fetchFacebookPosts(fbPageId, fbToken, sinceDate)
     console.log(`  Fetched ${posts.length} posts`)
   } catch (err: any) {
     console.error('  Facebook fetch failed:', err?.message ?? err)
-    return
+    process.exit(1)
   }
 
   if (posts.length === 0) {
-    console.log('No posts to process.')
+    console.log('No new posts to process.')
     return
   }
 

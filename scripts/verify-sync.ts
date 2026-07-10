@@ -68,11 +68,34 @@ async function checkRecentChunks(): Promise<boolean> {
   return true
 }
 
+async function checkSocialSync(): Promise<boolean> {
+  // Verify that at least one social media post (Facebook, Twitter, YouTube)
+  // has been stored in the last 7 days — confirms the social sync pipeline is alive.
+  const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 3600_000).toISOString()
+  const { count, error } = await supabase
+    .from('knowledge_chunks')
+    .select('id', { count: 'exact', head: true })
+    .in('source', ['facebook', 'twitter', 'youtube', 'youtube_transcript'])
+    .gte('created_at', sevenDaysAgo)
+
+  if (error) {
+    console.error('  ERROR querying social chunks:', error.message)
+    return false
+  }
+  if (!count || count === 0) {
+    console.error('  FAIL: No social media posts ingested in the last 7 days.')
+    return false
+  }
+  console.log(`  OK: ${count} social post(s) ingested in the last 7 days.`)
+  return true
+}
+
 async function main() {
   console.log('=== ZOE sync verification ===')
   const results = await Promise.all([
     checkRecentDevotion(),
     checkRecentChunks(),
+    checkSocialSync(),
   ])
 
   const allPassed = results.every(Boolean)
