@@ -28,39 +28,105 @@ const INFO_TOOLS = new Set([
   'web_search',
 ])
 
+// Infer the domain from the question and tool results so the verify pass can
+// apply domain-specific quality criteria rather than a generic accuracy check.
+function inferDomain(
+  userText: string,
+  toolResults: string[]
+): 'coffee' | 'phaneroo' | 'general' {
+  const text = (userText + ' ' + toolResults.join(' ')).toLowerCase()
+  const coffeeTerms = [
+    'coffee', 'arabica', 'robusta', 'farm', 'plant', 'crop', 'disease', 'pest',
+    'harvest', 'price', 'cooperative', 'pruning', 'nursery', 'soil', 'fertili',
+    'spray', 'berry', 'cherry', 'pulp', 'dry', 'processing', 'yield', 'ugx',
+    'farmgate', 'cbd', 'cwd', 'antestia', 'wilt', 'borer', 'mite', 'shade',
+  ]
+  const phanerooTerms = [
+    'phaneroo', 'devotion', 'sermon', 'apostle', 'grace', 'bible', 'scripture',
+    'faith', 'healing', 'holy spirit', 'lubega', 'kingdom', 'salvation',
+    'born again', 'righteousness', 'gospel', 'prayer', 'verse', 'testimony',
+    'worship', 'ministry', 'church', 'service', 'teaching',
+  ]
+
+  const coffeeScore = coffeeTerms.filter((t) => text.includes(t)).length
+  const phanerooScore = phanerooTerms.filter((t) => text.includes(t)).length
+
+  if (coffeeScore > phanerooScore && coffeeScore >= 1) return 'coffee'
+  if (phanerooScore > coffeeScore && phanerooScore >= 1) return 'phaneroo'
+  return 'general'
+}
+
+// Domain-specific verify prompts catch errors a generic reviewer misses:
+// coffee checks Uganda agronomy standards; Phaneroo checks doctrinal alignment
+// and prevents invented Apostle Grace quotes.
+function buildVerifyPrompt(
+  question: string,
+  toolContext: string,
+  draft: string,
+  domain: 'coffee' | 'phaneroo' | 'general'
+): string {
+  const ctx = `User asked: ${question}\n\nInformation ZOE retrieved from tools:\n${toolContext}\n\nZOE's draft reply:\n${draft}`
+
+  if (domain === 'coffee') {
+    return `You are an expert coffee agronomy reviewer for ZOE, a WhatsApp assistant serving Ugandan farmers.
+
+${ctx}
+
+Review silently on five points:
+1. Accuracy — every fact, quantity, and recommendation is supported by the retrieved data. No invented diseases, chemicals, spray rates, or prices.
+2. Uganda context — advice is appropriate for Uganda: local varieties (SL28, SL34, RUIRU11, Robusta), altitude zones, UCDA/MAAIF guidance, farmgate vs international futures prices distinguished where relevant.
+3. Actionability — the farmer knows what to do, when, and with what. Vague advice with no specifics wastes their money.
+4. Confidence calibration — if retrieved info is thin or absent, the draft hedges ("from what I found" / "confirm with your extension officer") rather than inventing details to fill the gap.
+5. Format — plain text, concise, no markdown, no bullet lists.
+
+If all five pass: reply with exactly the word PASS
+If any fail: reply with the corrected response only — plain text, no explanation, no preamble.`
+  }
+
+  if (domain === 'phaneroo') {
+    return `You are a Phaneroo Ministries teaching reviewer for ZOE, a WhatsApp assistant for Phaneroo followers.
+
+${ctx}
+
+Review silently on five points:
+1. Scripture grounding — every doctrinal claim is anchored in a Bible verse that was actually retrieved, not paraphrased from memory.
+2. No invented quotes — the draft does NOT put specific words in Apostle Grace Lubega's mouth unless the retrieved knowledge contains that exact quote.
+3. Phaneroo framework alignment — the answer is consistent with core Phaneroo doctrine: ZOE life, identity in Christ, Word as final authority, Holy Spirit as a person, healing as covenant inheritance.
+4. Devotion accuracy — if a devotion was retrieved, the reply is faithful to the retrieved text: correct title, date, scripture reference, and content.
+5. Format — warm, concise, plain text, no markdown.
+
+If all five pass: reply with exactly the word PASS
+If any fail: reply with the corrected response only — plain text, no explanation, no preamble.`
+  }
+
+  return `You are a quality reviewer for ZOE, a WhatsApp assistant for coffee farmers and Phaneroo Ministries.
+
+${ctx}
+
+Review silently on three points:
+1. Accuracy — the reply matches the retrieved data. No invented facts, prices, dates, or Bible verses.
+2. Length — appropriate for WhatsApp. Concise unless the user clearly asked for detail.
+3. Relevance — it actually answers what was asked.
+
+If all three pass: reply with exactly the word PASS
+If any issue: reply with the corrected response only — plain text, no explanation, no preamble.`
+}
+
 /**
- * After the main tool loop, run a quick second-pass review against the tool
- * results to catch invented facts, wrong lengths, or off-target replies.
- * Returns the draft unchanged (PASS) or a corrected version.
+ * Domain-aware verify pass. Applies coffee or Phaneroo-specific quality criteria
+ * rather than a single generic check. Logs corrections as experience data —
+ * reviewable in Vercel logs to identify recurring patterns.
  * Fails open — always returns something even if the review call errors.
  */
 async function verifyResponse(
   question: string,
   toolResults: string[],
   draft: string,
-  model: string
+  model: string,
+  domain: 'coffee' | 'phaneroo' | 'general'
 ): Promise<string> {
-  const toolContext = toolResults
-    .map((r) => r.slice(0, 600))
-    .join('\n---\n')
-
-  const prompt = `You are a quality reviewer for ZOE, a WhatsApp assistant for coffee farmers and Phaneroo Ministries.
-
-User asked: ${question}
-
-Information ZOE retrieved from tools:
-${toolContext}
-
-ZOE's draft reply:
-${draft}
-
-Review silently on three points:
-1. Accuracy — does the reply match the tool data? No invented facts, prices, dates, or Bible verses?
-2. Length — appropriate for WhatsApp? Concise unless the user clearly asked for detail.
-3. Relevance — does it actually answer what was asked?
-
-If all three pass, reply with exactly the word: PASS
-If there is any issue, reply with the corrected response only — plain text, no explanation, no preamble.`
+  const toolContext = toolResults.map((r) => r.slice(0, 600)).join('\n---\n')
+  const prompt = buildVerifyPrompt(question, toolContext, draft, domain)
 
   try {
     const res = await getOpenRouter().chat.completions.create({
@@ -70,6 +136,15 @@ If there is any issue, reply with the corrected response only — plain text, no
     })
     const result = res.choices[0]?.message?.content?.trim() ?? ''
     if (!result || result === 'PASS' || result.startsWith('PASS')) return draft
+    console.log(
+      JSON.stringify({
+        event: 'zoe_verify_correction',
+        domain,
+        question: question.slice(0, 100),
+        draft_len: draft.length,
+        corrected_len: result.length,
+      })
+    )
     return result
   } catch (err) {
     console.error('verifyResponse error — using original draft:', err)
@@ -136,10 +211,10 @@ export async function chat(
 
   const model = process.env.OPENROUTER_MODEL ?? 'openai/gpt-4o-mini'
 
-  // Collect results from info tools for the verify pass
   const collectedToolResults: string[] = []
   let infoToolUsed = false
   let finalDraft = ''
+  let maxRoundsReached = false
 
   for (let round = 0; round < 3; round++) {
     const response = await getOpenRouter().chat.completions.create({
@@ -194,15 +269,31 @@ export async function chat(
     }
   }
 
-  // Max rounds reached without a clean final reply — force one
   if (!finalDraft) {
+    maxRoundsReached = true
     const fallback = await getOpenRouter().chat.completions.create({ model, messages })
     finalDraft = fallback.choices[0]?.message?.content ?? ''
   }
 
-  // Verify pass: second model checks the draft against what the tools actually returned
   if (infoToolUsed && collectedToolResults.length > 0) {
-    return verifyResponse(userText, collectedToolResults, finalDraft, model)
+    const domain = inferDomain(userText, collectedToolResults)
+    const hasEmptyResults = collectedToolResults.some(
+      (r) =>
+        r.includes('NO_KNOWLEDGE_RESULTS') ||
+        r.includes('NO_DEVOTION_IN_DB') ||
+        r.includes('No relevant information')
+    )
+    if (hasEmptyResults || maxRoundsReached) {
+      console.log(
+        JSON.stringify({
+          event: 'zoe_quality_signal',
+          domain,
+          empty_results: hasEmptyResults,
+          max_rounds: maxRoundsReached,
+        })
+      )
+    }
+    return verifyResponse(userText, collectedToolResults, finalDraft, model, domain)
   }
 
   return finalDraft

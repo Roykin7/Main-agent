@@ -214,11 +214,15 @@ export async function executeToolCall(
         return 'Knowledge base search failed — answer from general knowledge if you can, and be transparent about uncertainty.'
       }
       if (chunks.length === 0) {
-        return 'No relevant information found in the knowledge base for this question.'
+        return `NO_KNOWLEDGE_RESULTS: No matching content found for "${args.query as string}". Try calling search_knowledge again with different keywords, or use web_search for current information.`
       }
-      return chunks
-        .map((c) => (c.title ? `${c.title}: ${c.content}` : c.content))
-        .join('\n---\n')
+      const quality = chunks.length >= 4 ? 'strong' : chunks.length >= 2 ? 'moderate' : 'limited'
+      const header = `[Found: ${chunks.length} result${chunks.length === 1 ? '' : 's'}, ${quality} match]`
+      return (
+        header +
+        '\n\n' +
+        chunks.map((c) => (c.title ? `${c.title}: ${c.content}` : c.content)).join('\n---\n')
+      )
     }
 
     case 'get_devotion': {
