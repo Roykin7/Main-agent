@@ -1,6 +1,7 @@
 import OpenAI from 'openai'
 import { ZOE_SYSTEM_PROMPT } from './zoe-prompt'
 import { ZOE_TOOLS, executeToolCall } from './tools'
+import { getSupabase } from './supabase'
 
 let openRouter: OpenAI | undefined
 function getOpenRouter(): OpenAI {
@@ -21,12 +22,32 @@ export type HistoryMessage = {
 // Tools that return factual information — their results are verified before sending.
 const INFO_TOOLS = new Set([
   'search_knowledge',
+  'search_diagnosis_cases',
   'get_devotion',
   'get_bible_verse',
   'get_weather',
   'get_commodity_price',
   'web_search',
 ])
+
+// Writes a row to interaction_feedback for later pattern analysis.
+// Non-blocking — failures are logged but do not affect the response.
+async function logInteractionFeedback(opts: {
+  domain: 'coffee' | 'phaneroo' | 'general'
+  questionSummary: string
+  hadEmptyResults: boolean
+  verifyCorrected: boolean
+  maxRoundsReached: boolean
+}): Promise<void> {
+  const { error } = await getSupabase().from('interaction_feedback').insert({
+    domain: opts.domain,
+    question_summary: opts.questionSummary.slice(0, 200),
+    had_empty_results: opts.hadEmptyResults,
+    verify_corrected: opts.verifyCorrected,
+    max_rounds_reached: opts.maxRoundsReached,
+  })
+  if (error) console.error('logInteractionFeedback error:', error)
+}
 
 // Infer the domain from the question and tool results so the verify pass can
 // apply domain-specific quality criteria rather than a generic accuracy check.
@@ -283,17 +304,20 @@ export async function chat(
         r.includes('NO_DEVOTION_IN_DB') ||
         r.includes('No relevant information')
     )
-    if (hasEmptyResults || maxRoundsReached) {
-      console.log(
-        JSON.stringify({
-          event: 'zoe_quality_signal',
-          domain,
-          empty_results: hasEmptyResults,
-          max_rounds: maxRoundsReached,
-        })
-      )
-    }
-    return verifyResponse(userText, collectedToolResults, finalDraft, model, domain)
+
+    const verified = await verifyResponse(userText, collectedToolResults, finalDraft, model, domain)
+    const wasCorrected = verified !== finalDraft
+
+    // Persist quality signal to experience library for pattern analysis
+    logInteractionFeedback({
+      domain,
+      questionSummary: userText,
+      hadEmptyResults: hasEmptyResults,
+      verifyCorrected: wasCorrected,
+      maxRoundsReached,
+    }).catch(() => {})
+
+    return verified
   }
 
   return finalDraft

@@ -8,6 +8,16 @@ export type KnowledgeChunk = {
   content: string
 }
 
+export type DiagnosisCase = {
+  symptomDescription: string
+  affectedPart: string | null
+  diagnosis: string
+  treatment: string
+  cropType: string
+  region: string | null
+  similarity?: number
+}
+
 export type Devotion = {
   title: string | null
   scriptureRef: string | null
@@ -36,6 +46,30 @@ export async function searchKnowledge(query: string): Promise<KnowledgeChunk[]> 
   return (data ?? []).map((row: any) => ({
     title: row.title,
     content: row.content,
+  }))
+}
+
+export async function searchDiagnosisCases(symptoms: string): Promise<DiagnosisCase[]> {
+  const queryEmbedding = await embed(symptoms)
+
+  const { data, error } = await getSupabase().rpc('match_diagnosis_cases', {
+    query_embedding: queryEmbedding,
+    match_count: 3,
+  })
+
+  if (error) {
+    console.error('searchDiagnosisCases error:', error)
+    return []
+  }
+
+  return (data ?? []).map((row: any) => ({
+    symptomDescription: row.symptom_description,
+    affectedPart: row.affected_part,
+    diagnosis: row.diagnosis,
+    treatment: row.treatment,
+    cropType: row.crop_type,
+    region: row.region,
+    similarity: row.similarity,
   }))
 }
 

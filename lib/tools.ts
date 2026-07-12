@@ -1,5 +1,5 @@
 import OpenAI from 'openai'
-import { searchKnowledge, getDevotion, type KnowledgeChunk } from './knowledge'
+import { searchKnowledge, searchDiagnosisCases, getDevotion, type KnowledgeChunk, type DiagnosisCase } from './knowledge'
 import { detectScriptureRequest, getVerse, type BibleTranslation } from './bible'
 import { embed } from './embeddings'
 import { getSupabase } from './supabase'
@@ -166,6 +166,64 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
           },
         },
         required: ['fact'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_diagnosis_cases',
+      description:
+        'Search past confirmed plant disease and pest diagnoses for similar symptom patterns. Call this alongside search_knowledge when a farmer describes plant problems — similar past cases help confirm or speed up diagnosis. Returns cases sorted by symptom similarity.',
+      parameters: {
+        type: 'object',
+        properties: {
+          symptoms: {
+            type: 'string',
+            description:
+              'Description of what the farmer is seeing — which part of the plant is affected, what the symptoms look like (colour, pattern, spread), and how fast it is progressing.',
+          },
+        },
+        required: ['symptoms'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'store_diagnosis_case',
+      description:
+        "Save a confirmed plant diagnosis to the case memory. Call this after giving a confident diagnosis based on the farmer's description and search results. Only call when you are certain of the diagnosis — not when you are listing possibilities. This builds real-world case knowledge that helps future farmers with similar problems.",
+      parameters: {
+        type: 'object',
+        properties: {
+          symptom_description: {
+            type: 'string',
+            description: "What the farmer described — the exact symptoms they reported in their own words",
+          },
+          affected_part: {
+            type: 'string',
+            description: 'Which part of the plant: leaves, stem, berries, roots, or whole tree',
+          },
+          diagnosis: {
+            type: 'string',
+            description: 'The confirmed disease or pest, e.g. "Coffee Berry Disease (CBD)" or "Antestia bug infestation"',
+          },
+          treatment: {
+            type: 'string',
+            description: 'The recommended treatment — specific product, application rate, and timing if available',
+          },
+          crop_type: {
+            type: 'string',
+            enum: ['arabica', 'robusta'],
+            description: 'Coffee type. Default arabica if unknown.',
+          },
+          region: {
+            type: 'string',
+            description: 'Farm region if the farmer mentioned it, e.g. "Mt Elgon", "Bugisu", "Western Uganda", "Rwenzori"',
+          },
+        },
+        required: ['symptom_description', 'diagnosis', 'treatment'],
       },
     },
   },
@@ -357,6 +415,80 @@ export async function executeToolCall(
         console.error('remember_user_fact error:', err)
         return 'Noted.'
       }
+    }
+
+    case 'search_diagnosis_cases': {
+      const symptoms = (args.symptoms as string)?.trim()
+      if (!symptoms) return 'No symptoms provided.'
+      let cases: DiagnosisCase[]
+      try {
+        cases = await searchDiagnosisCases(symptoms)
+      } catch (err) {
+        console.error('search_diagnosis_cases error:', err)
+        return 'Could not search past diagnosis cases — continue with knowledge base results.'
+      }
+      if (cases.length === 0) {
+        return 'No similar past cases found. Proceed with knowledge base results and your own assessment.'
+      }
+      return (
+        `[${cases.length} similar past case(s) found]\n\n` +
+        cases
+          .map(
+            (c, i) =>
+              `Case ${i + 1}: ${c.diagnosis}${c.region ? ` — ${c.region}` : ''}` +
+              `\nSymptoms: ${c.symptomDescription}` +
+              (c.affectedPart ? `\nAffected: ${c.affectedPart}` : '') +
+              `\nTreatment: ${c.treatment}`
+          )
+          .join('\n---\n')
+      )
+    }
+
+    case 'store_diagnosis_case': {
+      const symptomDescription = (args.symptom_description as string)?.trim()
+      const diagnosis = (args.diagnosis as string)?.trim()
+      const treatment = (args.treatment as string)?.trim()
+
+      if (!symptomDescription || !diagnosis || !treatment) return 'Noted.'
+
+      const affectedPart = args.affected_part as string | undefined
+      const cropType = (args.crop_type as string) ?? 'arabica'
+      const region = args.region as string | undefined
+
+      let embedding: number[]
+      try {
+        embedding = await embed(symptomDescription)
+      } catch (err) {
+        console.error('store_diagnosis_case embed error:', err)
+        return 'Noted.'
+      }
+
+      // Skip if a very similar case already exists
+      const { data: similar } = await getSupabase().rpc('match_diagnosis_cases', {
+        query_embedding: embedding,
+        match_count: 1,
+      })
+      if (similar?.[0]?.similarity > 0.90) {
+        return 'Similar case already on record.'
+      }
+
+      const { error } = await getSupabase().from('diagnosis_cases').insert({
+        symptom_description: symptomDescription,
+        affected_part: affectedPart ?? null,
+        diagnosis,
+        treatment,
+        crop_type: cropType,
+        region: region ?? null,
+        embedding,
+      })
+
+      if (error) {
+        console.error('store_diagnosis_case error:', error)
+        return 'Noted.'
+      }
+
+      console.log(`Diagnosis case stored: ${diagnosis}`)
+      return `Case saved: ${diagnosis}.`
     }
 
     case 'store_knowledge': {
