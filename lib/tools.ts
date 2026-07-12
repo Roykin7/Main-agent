@@ -472,18 +472,22 @@ export async function executeToolCall(
         return 'Missing required details — need first name, last name, gender, and where they were watching from.'
       }
 
-      // Save to Supabase
-      const { error: dbError } = await getSupabase().from('new_converts').insert({
-        phone,
-        first_name: firstName,
-        last_name: lastName,
-        gender,
-        city: city || null,
-        email: email || null,
-        watching_from: watchingFrom,
-        consent: true,
-        phaneroo_notified: false,
-      })
+      // Save to Supabase — select the id back so we can update phaneroo_notified by exact row
+      const { data: insertData, error: dbError } = await getSupabase()
+        .from('new_converts')
+        .insert({
+          phone,
+          first_name: firstName,
+          last_name: lastName,
+          gender,
+          city: city || null,
+          email: email || null,
+          watching_from: watchingFrom,
+          consent: true,
+          phaneroo_notified: false,
+        })
+        .select('id')
+        .single()
 
       if (dbError) {
         console.error('register_new_convert db error:', dbError)
@@ -503,16 +507,12 @@ export async function executeToolCall(
       }
       const emailSent = await sendNewConvertEmail(convertData)
 
-      // Update phaneroo_notified flag
-      if (emailSent) {
+      // Update phaneroo_notified by exact row id — safe even if same name registered twice
+      if (emailSent && insertData?.id) {
         await getSupabase()
           .from('new_converts')
           .update({ phaneroo_notified: true })
-          .eq('phone', phone)
-          .eq('first_name', firstName)
-          .eq('last_name', lastName)
-          .order('created_at', { ascending: false })
-          .limit(1)
+          .eq('id', insertData.id)
       }
 
       console.log(`New convert registered: ${firstName} ${lastName} [${phone}] email_sent=${emailSent}`)

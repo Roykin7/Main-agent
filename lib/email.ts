@@ -18,8 +18,15 @@ export async function sendNewConvertEmail(data: NewConvertData): Promise<boolean
     return false
   }
 
+  const from = process.env.RESEND_FROM
+  if (!from) {
+    // onboarding@resend.dev can only send to the account owner — useless for info@phaneroo.org.
+    // RESEND_FROM must be a sender on a verified domain in your Resend account.
+    console.error('sendNewConvertEmail: RESEND_FROM not set — email not sent. Set RESEND_FROM to a verified sender, e.g. "ZOE <noreply@yourdomain.com>"')
+    return false
+  }
+
   const resend = new Resend(apiKey)
-  const from = process.env.RESEND_FROM ?? 'ZOE <onboarding@resend.dev>'
   const date = new Date().toLocaleDateString('en-UG', {
     day: 'numeric',
     month: 'long',
