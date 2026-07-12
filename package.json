@@ -20,12 +20,12 @@
     "seed:agronomy": "tsx scripts/seed-uganda-coffee-agronomy.ts"
   },
   "dependencies": {
-    "@google/genai": "^2.8.0",
     "@supabase/supabase-js": "^2.45.4",
     "next": "14.2.35",
     "openai": "^6.43.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "resend": "^6.17.2"
   },
   "devDependencies": {
     "@types/node": "^20.14.9",

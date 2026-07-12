@@ -45,12 +45,29 @@ export async function getConversationContext(phone: string): Promise<Conversatio
   }
 }
 
+/**
+ * Returns true if a message with this Meta message_id was already saved.
+ * Used to deduplicate webhooks Meta sometimes delivers twice.
+ */
+export async function isMessageAlreadyProcessed(messageId: string): Promise<boolean> {
+  if (!messageId) return false
+  const { data } = await getSupabase()
+    .from('messages')
+    .select('id')
+    .eq('message_id', messageId)
+    .maybeSingle()
+  return !!data
+}
+
 export async function saveMessage(
   phone: string,
   role: 'user' | 'model',
-  content: string
+  content: string,
+  messageId?: string
 ): Promise<void> {
-  const { error } = await getSupabase().from('messages').insert({ phone, role, content })
+  const row: Record<string, any> = { phone, role, content }
+  if (messageId) row.message_id = messageId
+  const { error } = await getSupabase().from('messages').insert(row)
   if (error) console.error('saveMessage error:', error)
 }
 

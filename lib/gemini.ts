@@ -237,7 +237,7 @@ export async function chat(
   let finalDraft = ''
   let maxRoundsReached = false
 
-  for (let round = 0; round < 3; round++) {
+  for (let round = 0; round < 5; round++) {
     const response = await getOpenRouter().chat.completions.create({
       model,
       messages,

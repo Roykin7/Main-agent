@@ -100,6 +100,28 @@ async function processPosts(
   return { inserted, skipped }
 }
 
+async function checkFacebookTokenExpiry(token: string): Promise<void> {
+  try {
+    const res = await fetch(
+      `https://graph.facebook.com/v21.0/debug_token?input_token=${token}&access_token=${token}`
+    )
+    if (!res.ok) return
+    const data = await res.json()
+    const expiresAt: number | undefined = data?.data?.expires_at
+    if (!expiresAt) return // 0 = non-expiring page token — fine
+
+    const daysLeft = (expiresAt * 1000 - Date.now()) / 86400_000
+    if (daysLeft < 14) {
+      console.warn(
+        `⚠️  FACEBOOK TOKEN EXPIRES IN ${Math.floor(daysLeft)} DAYS (${new Date(expiresAt * 1000).toDateString()}).` +
+        ' Renew it in the Meta Developer Console before it expires or social sync will stop.'
+      )
+    }
+  } catch {
+    // Non-critical — don't block the sync
+  }
+}
+
 async function main() {
   console.log('=== ZOE social sync (Facebook) ===')
   console.log('  VOYAGE_API_KEY :', process.env.VOYAGE_API_KEY ? 'set' : 'NOT SET')
@@ -112,6 +134,8 @@ async function main() {
     console.log('\nFacebook: skipped (FACEBOOK_PAGE_ID or FACEBOOK_ACCESS_TOKEN not set)')
     return
   }
+
+  await checkFacebookTokenExpiry(fbToken)
 
   // Find the most recent post we already have so we only fetch newer ones
   const sinceDate = await getMostRecentPostDate('facebook')
