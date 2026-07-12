@@ -28,6 +28,26 @@ create index if not exists diagnosis_cases_embedding_idx
   on diagnosis_cases using ivfflat (embedding vector_cosine_ops)
   with (lists = 10);
 
+-- New converts registered via ZOE WhatsApp.
+-- Phone is the WhatsApp number (already known from the conversation).
+-- phaneroo_notified tracks whether the info@phaneroo.org email was sent.
+create table if not exists new_converts (
+  id                  bigserial    primary key,
+  phone               text         not null,
+  first_name          text         not null,
+  last_name           text         not null,
+  gender              text         not null check (gender in ('Male', 'Female')),
+  city                text,
+  country             text         not null default 'Uganda',
+  email               text,
+  watching_from       text         not null check (watching_from in ('online', 'physical')),
+  consent             boolean      not null default true,
+  phaneroo_notified   boolean      not null default false,
+  created_at          timestamptz  not null default now()
+);
+create index if not exists new_converts_phone_idx on new_converts (phone);
+create index if not exists new_converts_created_at_idx on new_converts (created_at);
+
 -- RPC: top-k most similar past diagnoses for a symptom embedding.
 create or replace function match_diagnosis_cases(
   query_embedding vector(512),

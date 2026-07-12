@@ -4,6 +4,7 @@ import { detectScriptureRequest, getVerse, type BibleTranslation } from './bible
 import { embed } from './embeddings'
 import { getSupabase } from './supabase'
 import { saveUserFact } from './user-profile'
+import { sendNewConvertEmail, type NewConvertData } from './email'
 
 function degreesToCompass(deg: number): string {
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
@@ -166,6 +167,47 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
           },
         },
         required: ['fact'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'register_new_convert',
+      description:
+        "Register someone who has just given their life to Christ. Call this after collecting their details conversationally — do NOT call it mid-conversation before you have the required fields. Saves their record to our database and sends a notification email to Phaneroo so they can follow up.",
+      parameters: {
+        type: 'object',
+        properties: {
+          first_name: {
+            type: 'string',
+            description: "Person's first name",
+          },
+          last_name: {
+            type: 'string',
+            description: "Person's last name / surname",
+          },
+          gender: {
+            type: 'string',
+            enum: ['Male', 'Female'],
+            description: "Person's gender",
+          },
+          watching_from: {
+            type: 'string',
+            enum: ['online', 'physical'],
+            description:
+              'Where they received salvation — "online" for YouTube/Facebook, "physical" for attending a Phaneroo service in person',
+          },
+          city: {
+            type: 'string',
+            description: 'City or town they are in, e.g. "Kampala", "Mbale", "Mbarara"',
+          },
+          email: {
+            type: 'string',
+            description: "Person's email address (optional — only include if they provided it)",
+          },
+        },
+        required: ['first_name', 'last_name', 'gender', 'watching_from'],
       },
     },
   },
@@ -415,6 +457,66 @@ export async function executeToolCall(
         console.error('remember_user_fact error:', err)
         return 'Noted.'
       }
+    }
+
+    case 'register_new_convert': {
+      const firstName = (args.first_name as string)?.trim()
+      const lastName = (args.last_name as string)?.trim()
+      const gender = args.gender as 'Male' | 'Female'
+      const watchingFrom = args.watching_from as 'online' | 'physical'
+      const city = (args.city as string | undefined)?.trim() ?? ''
+      const email = (args.email as string | undefined)?.trim()
+      const phone = context?.phone ?? 'unknown'
+
+      if (!firstName || !lastName || !gender || !watchingFrom) {
+        return 'Missing required details — need first name, last name, gender, and where they were watching from.'
+      }
+
+      // Save to Supabase
+      const { error: dbError } = await getSupabase().from('new_converts').insert({
+        phone,
+        first_name: firstName,
+        last_name: lastName,
+        gender,
+        city: city || null,
+        email: email || null,
+        watching_from: watchingFrom,
+        consent: true,
+        phaneroo_notified: false,
+      })
+
+      if (dbError) {
+        console.error('register_new_convert db error:', dbError)
+        return 'Could not save registration — please try again.'
+      }
+
+      // Send email to Phaneroo
+      const convertData: NewConvertData = {
+        firstName,
+        lastName,
+        phone,
+        gender,
+        city,
+        email,
+        watchingFrom,
+        consent: true,
+      }
+      const emailSent = await sendNewConvertEmail(convertData)
+
+      // Update phaneroo_notified flag
+      if (emailSent) {
+        await getSupabase()
+          .from('new_converts')
+          .update({ phaneroo_notified: true })
+          .eq('phone', phone)
+          .eq('first_name', firstName)
+          .eq('last_name', lastName)
+          .order('created_at', { ascending: false })
+          .limit(1)
+      }
+
+      console.log(`New convert registered: ${firstName} ${lastName} [${phone}] email_sent=${emailSent}`)
+      return `Registered: ${firstName} ${lastName} saved to database and Phaneroo notified by email.`
     }
 
     case 'search_diagnosis_cases': {
