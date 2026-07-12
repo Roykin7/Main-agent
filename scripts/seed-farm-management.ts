@@ -369,7 +369,7 @@ async function main() {
     const { data: existing } = await supabase
       .from('knowledge_chunks')
       .select('id')
-      .eq('source', 'elitesuccess-farms')
+      .eq('source', 'sarlis-consults')
       .eq('source_id', chunk.id)
       .maybeSingle()
 
@@ -386,7 +386,7 @@ async function main() {
         title: chunk.title,
         content: chunk.content,
         embedding,
-        source: 'elitesuccess-farms',
+        source: 'sarlis-consults',
         source_id: chunk.id,
       })
 
