@@ -69,24 +69,42 @@ async function checkRecentChunks(): Promise<boolean> {
 }
 
 async function checkSocialSync(): Promise<boolean> {
-  // Verify that at least one social media post (Facebook, Twitter, YouTube)
-  // has been stored in the last 7 days — confirms the social sync pipeline is alive.
+  // Hard-fail only if nothing in 30 days — that means the pipeline is genuinely
+  // broken (expired token, disabled page, etc.). A 7-day dry spell is normal
+  // when Phaneroo's posting cadence slows; warn but don't send a failure email.
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 3600_000).toISOString()
   const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 3600_000).toISOString()
-  const { count, error } = await supabase
+
+  const { count: count30, error } = await supabase
     .from('knowledge_chunks')
     .select('id', { count: 'exact', head: true })
     .in('source', ['facebook', 'twitter', 'youtube', 'youtube_transcript'])
-    .gte('created_at', sevenDaysAgo)
+    .gte('created_at', thirtyDaysAgo)
 
   if (error) {
     console.error('  ERROR querying social chunks:', error.message)
     return false
   }
-  if (!count || count === 0) {
-    console.error('  FAIL: No social media posts ingested in the last 7 days.')
+  if (!count30 || count30 === 0) {
+    console.error(
+      '  FAIL: No social media posts ingested in the last 30 days — check the Facebook access token and social sync logs.'
+    )
     return false
   }
-  console.log(`  OK: ${count} social post(s) ingested in the last 7 days.`)
+
+  const { count: count7 } = await supabase
+    .from('knowledge_chunks')
+    .select('id', { count: 'exact', head: true })
+    .in('source', ['facebook', 'twitter', 'youtube', 'youtube_transcript'])
+    .gte('created_at', sevenDaysAgo)
+
+  if (!count7 || count7 === 0) {
+    console.warn(
+      `  WARN: No social posts in the last 7 days (${count30} found in last 30 days) — Phaneroo may not have posted recently. Check the Facebook token if this persists.`
+    )
+  } else {
+    console.log(`  OK: ${count7} social post(s) ingested in the last 7 days.`)
+  }
   return true
 }
 

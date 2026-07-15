@@ -40,7 +40,7 @@ export async function fetchFacebookPosts(
   }
 
   let url: string | null =
-    `https://graph.facebook.com/v19.0/${pageId}/posts?${params}`
+    `https://graph.facebook.com/v21.0/${pageId}/posts?${params}`
 
   let pageCount = 0
   const MAX_PAGES = 100  // safety cap (~10,000 posts)
