@@ -61,8 +61,8 @@ const CASES: EvalCase[] = [
         pass: (r) => /spray|copper|fungicide|prune|remove|treat|apply/i.test(r),
       },
       {
-        description: 'No markdown (plain WhatsApp text)',
-        pass: (r) => !r.includes('**') && !r.includes('##'),
+        description: 'No GitHub-style markdown (** headers ## code blocks — look ugly in WhatsApp raw)',
+        pass: (r) => !r.includes('**') && !r.includes('##') && !r.includes('```'),
       },
     ],
   },
