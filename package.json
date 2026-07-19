@@ -18,7 +18,8 @@
     "seed:wageningen": "tsx scripts/seed-wageningen-2026.ts",
     "seed:farm-management": "tsx scripts/seed-farm-management.ts",
     "seed:agronomy": "tsx scripts/seed-uganda-coffee-agronomy.ts",
-    "check-feedback": "tsx scripts/check-feedback-patterns.ts"
+    "check-feedback": "tsx scripts/check-feedback-patterns.ts",
+    "eval": "tsx scripts/eval-zoe.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",

@@ -1,4 +1,5 @@
 import OpenAI from 'openai'
+import { createHash } from 'crypto'
 import { ZOE_SYSTEM_PROMPT } from './zoe-prompt'
 import { ZOE_TOOLS, executeToolCall } from './tools'
 import { getSupabase } from './supabase'
@@ -19,9 +20,14 @@ export type HistoryMessage = {
   content: string
 }
 
-// Cap each tool call at 12 seconds. Prevents a slow Voyage AI or Supabase
-// response from hanging the entire webhook until Vercel times it out.
+// Cap each tool call at 12 seconds — prevents a slow Voyage AI or Supabase
+// call from hanging the entire webhook until Vercel times it out.
 const TOOL_TIMEOUT_MS = 12_000
+
+// Cap tool result characters injected into the context per round.
+// Prevents one large KB search from crowding out reasoning in later rounds
+// (context drift anti-pattern). Full result still goes to the verify pass.
+const TOOL_OUTPUT_CAP = 1_500
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   return Promise.race([
@@ -30,7 +36,11 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
   ])
 }
 
-// Tools that return factual information — their results are verified before sending.
+function hashPhone(phone: string): string {
+  return createHash('sha256').update(phone).digest('hex').slice(0, 16)
+}
+
+// Tools that return factual information — results collected for the verify pass.
 const INFO_TOOLS = new Set([
   'search_knowledge',
   'search_diagnosis_cases',
@@ -41,8 +51,7 @@ const INFO_TOOLS = new Set([
   'web_search',
 ])
 
-// Writes a row to interaction_feedback for later pattern analysis.
-// Non-blocking — failures are logged but do not affect the response.
+// Quality signal — logged when info tools are used, for domain-level analysis.
 async function logInteractionFeedback(opts: {
   domain: 'coffee' | 'phaneroo' | 'general'
   questionSummary: string
@@ -60,8 +69,34 @@ async function logInteractionFeedback(opts: {
   if (error) console.error('logInteractionFeedback error:', error)
 }
 
-// Infer the domain from the question and tool results so the verify pass can
-// apply domain-specific quality criteria rather than a generic accuracy check.
+// Execution trace — logged for EVERY request, not just those using info tools.
+// Captures full tool chain with timing so individual failures can be traced.
+async function logAgentTrace(opts: {
+  traceId: string
+  phoneHash: string
+  inputType: string
+  roundsUsed: number
+  toolsCalled: Array<{ name: string; round: number; durationMs: number; resultChars: number; timedOut: boolean }>
+  verifyCorrect: boolean
+  hadEmptyResults: boolean
+  finalReplyChars: number
+  totalDurationMs: number
+}): Promise<void> {
+  const { error } = await getSupabase().from('agent_traces').insert({
+    trace_id:          opts.traceId,
+    phone_hash:        opts.phoneHash,
+    input_type:        opts.inputType,
+    rounds_used:       opts.roundsUsed,
+    tools_called:      opts.toolsCalled,
+    verify_corrected:  opts.verifyCorrect,
+    had_empty_results: opts.hadEmptyResults,
+    timed_out_tools:   opts.toolsCalled.filter((t) => t.timedOut).length,
+    final_reply_chars: opts.finalReplyChars,
+    total_duration_ms: opts.totalDurationMs,
+  })
+  if (error) console.error('logAgentTrace error:', error)
+}
+
 function inferDomain(
   userText: string,
   toolResults: string[]
@@ -79,18 +114,13 @@ function inferDomain(
     'born again', 'righteousness', 'gospel', 'prayer', 'verse', 'testimony',
     'worship', 'ministry', 'church', 'service', 'teaching',
   ]
-
   const coffeeScore = coffeeTerms.filter((t) => text.includes(t)).length
   const phanerooScore = phanerooTerms.filter((t) => text.includes(t)).length
-
   if (coffeeScore > phanerooScore && coffeeScore >= 1) return 'coffee'
   if (phanerooScore > coffeeScore && phanerooScore >= 1) return 'phaneroo'
   return 'general'
 }
 
-// Domain-specific verify prompts catch errors a generic reviewer misses:
-// coffee checks Uganda agronomy standards; Phaneroo checks doctrinal alignment
-// and prevents invented Apostle Grace quotes.
 function buildVerifyPrompt(
   question: string,
   toolContext: string,
@@ -144,12 +174,6 @@ If all three pass: reply with exactly the word PASS
 If any issue: reply with the corrected response only — plain text, no explanation, no preamble.`
 }
 
-/**
- * Domain-aware verify pass. Applies coffee or Phaneroo-specific quality criteria
- * rather than a single generic check. Logs corrections as experience data —
- * reviewable in Vercel logs to identify recurring patterns.
- * Fails open — always returns something even if the review call errors.
- */
 async function verifyResponse(
   question: string,
   toolResults: string[],
@@ -159,7 +183,6 @@ async function verifyResponse(
 ): Promise<string> {
   const toolContext = toolResults.map((r) => r.slice(0, 600)).join('\n---\n')
   const prompt = buildVerifyPrompt(question, toolContext, draft, domain)
-
   try {
     const res = await getOpenRouter().chat.completions.create({
       model,
@@ -168,15 +191,13 @@ async function verifyResponse(
     })
     const result = res.choices[0]?.message?.content?.trim() ?? ''
     if (!result || result === 'PASS' || result.startsWith('PASS')) return draft
-    console.log(
-      JSON.stringify({
-        event: 'zoe_verify_correction',
-        domain,
-        question: question.slice(0, 100),
-        draft_len: draft.length,
-        corrected_len: result.length,
-      })
-    )
+    console.log(JSON.stringify({
+      event: 'zoe_verify_correction',
+      domain,
+      question: question.slice(0, 100),
+      draft_len: draft.length,
+      corrected_len: result.length,
+    }))
     return result
   } catch (err) {
     console.error('verifyResponse error — using original draft:', err)
@@ -185,11 +206,10 @@ async function verifyResponse(
 }
 
 /**
- * Agentic chat loop. Runs up to 3 tool-call rounds, then optionally runs a
- * verify pass against the collected tool results before returning.
+ * Main agentic chat function.
  *
- * @param phone        WhatsApp phone number — passed to tools that need it (e.g. remember_user_fact)
- * @param userProfile  Per-user facts loaded from user_profiles table
+ * @param inputType  Original message type hint ('text'|'audio'|'image'|'location')
+ *                   used in traces — does not change behaviour, only logging.
  */
 export async function chat(
   history: HistoryMessage[],
@@ -198,17 +218,21 @@ export async function chat(
   phone?: string,
   userProfile?: string[],
   imageBase64?: string,
-  imageMimeType?: string
+  imageMimeType?: string,
+  inputType?: string,
 ): Promise<string> {
+  const traceStart = Date.now()
+  const traceId = `${(phone ?? 'anon').slice(-4)}_${traceStart}`
+  const traceTools: Array<{ name: string; round: number; durationMs: number; resultChars: number; timedOut: boolean }> = []
+
   const messages: OpenAI.ChatCompletionMessageParam[] = [
     { role: 'system', content: ZOE_SYSTEM_PROMPT },
   ]
 
-  // Inject per-user memory so ZOE knows who she's talking to
   if (userProfile && userProfile.length > 0) {
     messages.push({
       role: 'system',
-      content: `What you already know about this specific user:\n${userProfile.map((f) => `• ${f}`).join('\n')}\nUse this context naturally — don't repeat it back unless it's relevant to what they just asked.`,
+      content: `What you already know about this specific user:\n${userProfile.map((f) => `• ${f}`).join('\n')}\nUse this context naturally — don't repeat it back unless it's relevant. Facts are listed oldest first; if two facts contradict, the later one is current. If unclear which is correct, ask the user once then update with remember_user_fact.`,
     })
   }
 
@@ -231,10 +255,7 @@ export async function chat(
       role: 'user',
       content: [
         { type: 'text', text: userText || 'Please look at this image carefully.' },
-        {
-          type: 'image_url',
-          image_url: { url: `data:${imageMimeType ?? 'image/jpeg'};base64,${imageBase64}` },
-        },
+        { type: 'image_url', image_url: { url: `data:${imageMimeType ?? 'image/jpeg'};base64,${imageBase64}` } },
       ],
     })
   } else {
@@ -247,8 +268,11 @@ export async function chat(
   let infoToolUsed = false
   let finalDraft = ''
   let maxRoundsReached = false
+  let roundsUsed = 0
 
   for (let round = 0; round < 5; round++) {
+    roundsUsed = round + 1
+
     const response = await getOpenRouter().chat.completions.create({
       model,
       messages,
@@ -258,13 +282,11 @@ export async function chat(
 
     const msg = response.choices[0].message
 
-    // No tool calls — this is the final reply
     if (!msg.tool_calls || msg.tool_calls.length === 0) {
       finalDraft = msg.content ?? ''
       break
     }
 
-    // Filter to function calls only — type predicate ensures .function is accessible
     const fnCalls = msg.tool_calls.filter(
       (tc): tc is OpenAI.ChatCompletionMessageFunctionToolCall => tc.type === 'function'
     )
@@ -276,7 +298,9 @@ export async function chat(
     })
 
     for (const toolCall of fnCalls) {
-      console.log(`Tool: ${toolCall.function.name}(${toolCall.function.arguments})`)
+      const toolStart = Date.now()
+      console.log(`[r${round}] Tool: ${toolCall.function.name}(${toolCall.function.arguments.slice(0, 120)})`)
+
       let result: string
       try {
         result = await withTimeout(
@@ -292,15 +316,27 @@ export async function chat(
         result = `Tool execution error: ${err}`
       }
 
+      const durationMs = Date.now() - toolStart
+      const timedOut = result.includes('timed out')
+
+      traceTools.push({ name: toolCall.function.name, round, durationMs, resultChars: result.length, timedOut })
+
+      // Collect full result for verify pass (verify already caps at 600 chars internally)
       if (INFO_TOOLS.has(toolCall.function.name)) {
         collectedToolResults.push(`[${toolCall.function.name}] ${result}`)
         infoToolUsed = true
       }
 
+      // Cap result injected into context — prevents context drift across rounds.
+      // The full result is in collectedToolResults for the verify pass.
+      const contextResult = result.length > TOOL_OUTPUT_CAP
+        ? result.slice(0, TOOL_OUTPUT_CAP) + `\n[...${result.length - TOOL_OUTPUT_CAP} chars omitted to keep context focused]`
+        : result
+
       messages.push({
         role: 'tool',
         tool_call_id: toolCall.id,
-        content: result,
+        content: contextResult,
       })
     }
   }
@@ -311,9 +347,13 @@ export async function chat(
     finalDraft = fallback.choices[0]?.message?.content ?? ''
   }
 
+  let wasCorrected = false
+  let hasEmptyResults = false
+  let verifiedReply = finalDraft
+
   if (infoToolUsed && collectedToolResults.length > 0) {
     const domain = inferDomain(userText, collectedToolResults)
-    const hasEmptyResults = collectedToolResults.some(
+    hasEmptyResults = collectedToolResults.some(
       (r) =>
         r.includes('NO_KNOWLEDGE_RESULTS') ||
         r.includes('NO_DEVOTION_IN_DB') ||
@@ -321,9 +361,10 @@ export async function chat(
     )
 
     const verified = await verifyResponse(userText, collectedToolResults, finalDraft, model, domain)
-    const wasCorrected = verified !== finalDraft
+    wasCorrected = verified !== finalDraft
+    verifiedReply = verified
 
-    // Persist quality signal to experience library for pattern analysis
+    // Domain-level quality signal (used by check-feedback-patterns.ts)
     logInteractionFeedback({
       domain,
       questionSummary: userText,
@@ -331,11 +372,22 @@ export async function chat(
       verifyCorrected: wasCorrected,
       maxRoundsReached,
     }).catch(() => {})
-
-    return verified
   }
 
-  return finalDraft
+  // Full execution trace — every request, regardless of tools used
+  logAgentTrace({
+    traceId,
+    phoneHash: phone ? hashPhone(phone) : 'anon',
+    inputType: inputType ?? (imageBase64 ? 'image' : 'text'),
+    roundsUsed,
+    toolsCalled: traceTools,
+    verifyCorrect: wasCorrected,
+    hadEmptyResults: hasEmptyResults,
+    finalReplyChars: verifiedReply.length,
+    totalDurationMs: Date.now() - traceStart,
+  }).catch(() => {})
+
+  return verifiedReply
 }
 
 export async function summarizeHistory(

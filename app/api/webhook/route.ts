@@ -120,7 +120,7 @@ export async function POST(req: NextRequest) {
     await saveMessage(from, 'user', messageText, messageId)
     console.log('Saved user message')
 
-    const reply = await chat(history, userText, summary, from, userProfile, imageBase64, imageMimeType)
+    const reply = await chat(history, userText, summary, from, userProfile, imageBase64, imageMimeType, type)
     console.log('Reply:', reply?.slice(0, 80))
 
     const safeReply = reply?.trim() || FALLBACK_REPLY

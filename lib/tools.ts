@@ -39,7 +39,7 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
     function: {
       name: 'search_knowledge',
       description:
-        'Search the knowledge base for facts about coffee farming, agronomy, the coffee value chain, or Phaneroo Ministries. Also searches recent social media posts from Phaneroo. Call this for any factual question about either topic.',
+        'Search the knowledge base for facts about coffee farming, agronomy, the coffee value chain, or Phaneroo Ministries teachings and social posts. For plant disease symptoms call this AND search_diagnosis_cases in the same round — they search different databases. For devotions by date, call get_devotion first; only fall back here if get_devotion returns NO_DEVOTION_IN_DB.',
       parameters: {
         type: 'object',
         properties: {
@@ -57,7 +57,7 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
     function: {
       name: 'get_devotion',
       description:
-        "Get the Phaneroo daily devotion for a specific date. Call when the user asks for today's devotion, yesterday's devotion, or a devotion for a specific date.",
+        "Get the Phaneroo daily devotion for a specific date. ALWAYS call this first — before search_knowledge — when a specific devotion date is mentioned. Only fall back to search_knowledge if this returns NO_DEVOTION_IN_DB.",
       parameters: {
         type: 'object',
         properties: {
@@ -156,7 +156,7 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
     function: {
       name: 'remember_user_fact',
       description:
-        'Remember a personal fact about THIS specific user — their farm location, crop varieties, farm size, cooperative they belong to, challenges they face, or anything they want ZOE to remember about them personally across conversations. Different from store_knowledge, which stores general facts for everyone. Call this when a user shares something about themselves or explicitly asks you to remember something.',
+        'Remember a personal fact about THIS specific user only — their farm, location, crop type, cooperative, challenges, or anything personal they share. NOT for general knowledge. For facts useful to all users, use store_knowledge instead. Call this immediately when a user shares something about themselves or asks you to remember something.',
       parameters: {
         type: 'object',
         properties: {
@@ -216,7 +216,7 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
     function: {
       name: 'search_diagnosis_cases',
       description:
-        'Search past confirmed plant disease and pest diagnoses for similar symptom patterns. Call this alongside search_knowledge when a farmer describes plant problems — similar past cases help confirm or speed up diagnosis. Returns cases sorted by symptom similarity.',
+        'Search past confirmed plant diagnoses by symptom similarity. Call this ALONGSIDE search_knowledge in the same round for any plant problem — not instead of it. They search different databases and complement each other. Returns cases sorted by symptom match.',
       parameters: {
         type: 'object',
         properties: {
@@ -274,7 +274,7 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
     function: {
       name: 'store_knowledge',
       description:
-        'Save a new fact to the knowledge base. Call this when a user shares specific, useful information about coffee farming/agronomy or Phaneroo Ministries that is not already in the knowledge base. Do NOT store questions, greetings, opinions, or personal details like names or phone numbers.',
+        'Save a verified fact to the shared knowledge base — useful to all users, not just this person. For personal user info (their farm, location), use remember_user_fact instead. Only store clear factual statements — not questions, opinions, instructions, or unverified claims. Content must relate to coffee agronomy or Phaneroo Ministries.',
       parameters: {
         type: 'object',
         properties: {
@@ -449,6 +449,19 @@ export async function executeToolCall(
       const fact = (args.fact as string)?.trim()
       if (!fact || fact.length < 10) return 'Noted.'
       if (!context?.phone) return 'Noted.'
+
+      // Block prompt injection attempts hidden as "facts to remember"
+      const lowerFact = fact.toLowerCase()
+      const injectionSignals = [
+        'ignore previous', 'ignore your', 'system prompt', 'new instruction',
+        'forget everything', 'act as', 'pretend to be', 'jailbreak', 'override',
+        'disregard', 'you are now', 'from now on you',
+      ]
+      if (injectionSignals.some((s) => lowerFact.includes(s))) {
+        console.warn(`remember_user_fact: injection attempt blocked [${context.phone}]: "${fact.slice(0, 80)}"`)
+        return 'Noted.'
+      }
+
       try {
         await saveUserFact(context.phone, fact)
         console.log(`User fact saved [${context.phone}]: "${fact}"`)
@@ -553,6 +566,14 @@ export async function executeToolCall(
 
       if (!symptomDescription || !diagnosis || !treatment) return 'Noted.'
 
+      // Quality bar: vague entries teach future farmers wrong things
+      if (symptomDescription.length < 20) {
+        return 'Not stored — symptom description too brief. Include what the plant looks like and which part is affected.'
+      }
+      if (treatment.length < 15) {
+        return 'Not stored — treatment too vague. Include a specific product, action, or application rate.'
+      }
+
       const affectedPart = args.affected_part as string | undefined
       const cropType = (args.crop_type as string) ?? 'arabica'
       const region = args.region as string | undefined
@@ -598,8 +619,27 @@ export async function executeToolCall(
       const title = (args.title as string).trim()
       const content = (args.content as string).trim()
 
-      if (content.length < 20) {
-        return 'Noted.'
+      if (content.length < 20) return 'Noted.'
+
+      // Reject questions — only factual statements belong in the KB
+      const lowerContent = content.toLowerCase()
+      const firstWord = lowerContent.split(/\s+/)[0]
+      if (
+        content.endsWith('?') ||
+        ['how', 'what', 'why', 'when', 'where', 'who', 'is', 'can', 'does', 'do', 'will', 'should'].includes(firstWord)
+      ) {
+        return 'Not stored — this looks like a question or instruction. Only verified factual statements are saved to the knowledge base.'
+      }
+
+      // Domain alignment: content must match the declared topic
+      const coffeeSignals = ['coffee', 'arabica', 'robusta', 'farm', 'harvest', 'cherry', 'bean', 'cooperative', 'cbd', 'cwd', 'fertili', 'pruning', 'soil', 'shade', 'processing', 'export', 'ucda', 'crop', 'plant', 'pest', 'disease', 'spray', 'yield']
+      const phanerooSignals = ['phaneroo', 'god', 'jesus', 'christ', 'holy', 'spirit', 'faith', 'grace', 'scripture', 'bible', 'verse', 'sermon', 'devotion', 'church', 'worship', 'prayer', 'salvation', 'gospel', 'apostle', 'healing', 'kingdom', 'lubega']
+
+      if (topic === 'coffee' && !coffeeSignals.some((s) => lowerContent.includes(s))) {
+        return 'Not stored — this content does not appear to be about coffee farming or the value chain.'
+      }
+      if (topic === 'phaneroo' && !phanerooSignals.some((s) => lowerContent.includes(s))) {
+        return 'Not stored — this content does not appear to be about Phaneroo Ministries or the Bible.'
       }
 
       // Semantic duplicate check: skip if very similar content already exists
