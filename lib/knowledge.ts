@@ -34,6 +34,7 @@ export async function searchKnowledge(query: string): Promise<KnowledgeChunk[]> 
 
   const { data, error } = await getSupabase().rpc('match_knowledge_chunks', {
     query_embedding: queryEmbedding,
+    query_text: query,
     match_count: MATCH_COUNT,
     filter_topic: null,
   })
