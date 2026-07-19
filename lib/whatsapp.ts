@@ -127,7 +127,7 @@ export function verifySignature(rawBody: string, signature: string | null): bool
 
 // ─── Parsing ─────────────────────────────────────────────────────────────────
 
-export type MessageType = 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker' | 'unsupported'
+export type MessageType = 'text' | 'image' | 'audio' | 'video' | 'document' | 'sticker' | 'location' | 'unsupported'
 
 export type IncomingMessage = {
   from: string
@@ -165,7 +165,24 @@ export function parseIncomingMessage(payload: any): IncomingMessage | null {
   }
 
   if (message.type === 'audio' || message.type === 'voice') {
-    return { from, messageId, type: 'audio', text: '' }
+    return {
+      from,
+      messageId,
+      type: 'audio',
+      text: '',
+      mediaId: message.audio?.id ?? message.voice?.id,
+    }
+  }
+
+  if (message.type === 'location') {
+    const loc = message.location ?? {}
+    const label = loc.name ?? loc.address ?? `${loc.latitude}, ${loc.longitude}`
+    return {
+      from,
+      messageId,
+      type: 'location',
+      text: `User sent their location: ${label}${loc.latitude != null ? ` (lat ${loc.latitude}, lng ${loc.longitude})` : ''}`,
+    }
   }
 
   if (message.type === 'video') {

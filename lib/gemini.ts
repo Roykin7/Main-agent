@@ -19,6 +19,17 @@ export type HistoryMessage = {
   content: string
 }
 
+// Cap each tool call at 12 seconds. Prevents a slow Voyage AI or Supabase
+// response from hanging the entire webhook until Vercel times it out.
+const TOOL_TIMEOUT_MS = 12_000
+
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ])
+}
+
 // Tools that return factual information — their results are verified before sending.
 const INFO_TOOLS = new Set([
   'search_knowledge',
@@ -268,10 +279,14 @@ export async function chat(
       console.log(`Tool: ${toolCall.function.name}(${toolCall.function.arguments})`)
       let result: string
       try {
-        result = await executeToolCall(
-          toolCall.function.name,
-          JSON.parse(toolCall.function.arguments),
-          { phone }
+        result = await withTimeout(
+          executeToolCall(
+            toolCall.function.name,
+            JSON.parse(toolCall.function.arguments),
+            { phone }
+          ),
+          TOOL_TIMEOUT_MS,
+          `Tool ${toolCall.function.name} timed out — answer from your general knowledge and be transparent about the uncertainty.`
         )
       } catch (err) {
         result = `Tool execution error: ${err}`
