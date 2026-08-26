@@ -19,6 +19,7 @@
     "seed:farm-management": "tsx scripts/seed-farm-management.ts",
     "seed:agronomy": "tsx scripts/seed-uganda-coffee-agronomy.ts",
     "check-feedback": "tsx scripts/check-feedback-patterns.ts",
+    "review-pending": "tsx scripts/review-pending.ts",
     "eval": "tsx scripts/eval-zoe.ts"
   },
   "dependencies": {

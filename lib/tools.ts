@@ -688,6 +688,7 @@ export async function executeToolCall(
         crop_type: cropType,
         region: region ?? null,
         embedding,
+        approved: false, // held for human review before it can surface as a "past case" for other farmers
       })
 
       if (error) {
@@ -695,8 +696,8 @@ export async function executeToolCall(
         return 'Noted.'
       }
 
-      console.log(`Diagnosis case stored: ${diagnosis}`)
-      return `Case saved: ${diagnosis}.`
+      console.log(`Diagnosis case stored (pending review): ${diagnosis}`)
+      return `Case saved: ${diagnosis}. It's queued for review before it's used to help other farmers — do not tell the farmer this case is now confirmed KB or reference material for others.`
     }
 
     case 'store_knowledge': {
@@ -753,6 +754,7 @@ export async function executeToolCall(
         content,
         embedding,
         source: 'user-contributed',
+        approved: false, // held for human review before it's served to other users via search_knowledge
       })
 
       if (error) {
@@ -760,8 +762,8 @@ export async function executeToolCall(
         return 'Noted.'
       }
 
-      console.log(`Learned: [${topic}] "${title}"`)
-      return `Stored "${title}" under ${topic} knowledge.`
+      console.log(`Learned (pending review): [${topic}] "${title}"`)
+      return `Stored "${title}" under ${topic} knowledge — queued for review before it's used to answer other users. Do not tell the user this is now confirmed, published knowledge.`
     }
 
     default:
