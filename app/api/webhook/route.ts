@@ -16,6 +16,7 @@ import {
 } from '@/lib/messages'
 import { loadUserProfile } from '@/lib/user-profile'
 import { withTimeout } from '@/lib/timeout'
+import { checkRateLimit } from '@/lib/rate-limit'
 
 // Hard ceiling for this function on Vercel. Keep the internal timeouts below
 // comfortably under this so there's always time left to send a reply before
@@ -37,6 +38,10 @@ const UNSUPPORTED_REPLIES: Record<string, string> = {
 
 const FALLBACK_REPLY = "Sorry, something went wrong on my end — please try again in a moment."
 const AUDIO_FALLBACK  = "I couldn't make out that voice note — could you type your question? I'm right here!"
+const RATE_LIMIT_REPLIES = {
+  burst: "You're sending messages a bit fast for me to keep up — give me a minute and try again.",
+  daily: "You've reached today's message limit with me — please try again tomorrow. For anything urgent, reach out to your local extension officer.",
+}
 
 export async function GET(req: NextRequest) {
   const searchParams = req.nextUrl.searchParams
@@ -81,6 +86,13 @@ export async function POST(req: NextRequest) {
 
   // Blue ticks immediately — user sees ZOE received the message while it thinks
   if (messageId) sendReadReceipt(messageId).catch(() => {})
+
+  const rateLimit = await checkRateLimit(from)
+  if (rateLimit.limited) {
+    console.log(`Rate limited (${rateLimit.reason}):`, from)
+    await sendLongText(from, RATE_LIMIT_REPLIES[rateLimit.reason]).catch(() => {})
+    return NextResponse.json({ ok: true })
+  }
 
   try {
     console.log(`[${type}] from ${from}`)
