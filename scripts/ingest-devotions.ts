@@ -15,7 +15,7 @@ import { config } from 'dotenv'
 config({ path: '.env.local' })
 
 const SITE = 'https://phaneroo.org'
-const DEVOTION_CATEGORY_ID = 19 // "Phaneroo Devotion"
+const DEVOTION_CATEGORY_ID = 1665 // "Daily_devotion" (was 19 — phaneroo.org re-categorized their WP site, breaking sync since ~2026-08-19)
 const EMBED_DELAY_MS = 250
 
 type WPPost = {
