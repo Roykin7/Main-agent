@@ -3,6 +3,7 @@ import { createHash } from 'crypto'
 import { ZOE_SYSTEM_PROMPT } from './zoe-prompt'
 import { ZOE_TOOLS, executeToolCall } from './tools'
 import { getSupabase } from './supabase'
+import { withTimeout } from './timeout'
 
 let openRouter: OpenAI | undefined
 function getOpenRouter(): OpenAI {
@@ -28,13 +29,6 @@ const TOOL_TIMEOUT_MS = 12_000
 // Prevents one large KB search from crowding out reasoning in later rounds
 // (context drift anti-pattern). Full result still goes to the verify pass.
 const TOOL_OUTPUT_CAP = 1_500
-
-function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
-  ])
-}
 
 function hashPhone(phone: string): string {
   return createHash('sha256').update(phone).digest('hex').slice(0, 16)

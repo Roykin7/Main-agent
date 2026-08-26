@@ -15,6 +15,17 @@ import {
   isMessageAlreadyProcessed,
 } from '@/lib/messages'
 import { loadUserProfile } from '@/lib/user-profile'
+import { withTimeout } from '@/lib/timeout'
+
+// Hard ceiling for this function on Vercel. Keep the internal timeouts below
+// comfortably under this so there's always time left to send a reply before
+// Vercel kills the function outright (a hard kill means NO reply at all,
+// not even the fallback — worse than any of the internal timeouts firing).
+export const maxDuration = 60
+
+const MEDIA_DOWNLOAD_TIMEOUT_MS = 10_000
+const AUDIO_TRANSCRIBE_TIMEOUT_MS = 15_000
+const CHAT_TIMEOUT_MS = 30_000
 
 // Types that have no useful content for ZOE to process
 const UNSUPPORTED_REPLIES: Record<string, string> = {
@@ -88,12 +99,16 @@ export async function POST(req: NextRequest) {
         await sendLongText(from, AUDIO_FALLBACK).catch(() => {})
         return NextResponse.json({ ok: true })
       }
-      const media = await downloadMedia(mediaId)
+      const media = await withTimeout(downloadMedia(mediaId), MEDIA_DOWNLOAD_TIMEOUT_MS, null)
       if (!media) {
         await sendLongText(from, AUDIO_FALLBACK).catch(() => {})
         return NextResponse.json({ ok: true })
       }
-      const transcript = await transcribeAudio(media.base64, media.mimeType)
+      const transcript = await withTimeout(
+        transcribeAudio(media.base64, media.mimeType),
+        AUDIO_TRANSCRIBE_TIMEOUT_MS,
+        null
+      )
       if (!transcript) {
         await sendLongText(from, AUDIO_FALLBACK).catch(() => {})
         return NextResponse.json({ ok: true })
@@ -104,7 +119,7 @@ export async function POST(req: NextRequest) {
 
     // ── Image: download for vision model ────────────────────────────────────
     if (type === 'image' && mediaId) {
-      const media = await downloadMedia(mediaId)
+      const media = await withTimeout(downloadMedia(mediaId), MEDIA_DOWNLOAD_TIMEOUT_MS, null)
       if (media) {
         imageBase64  = media.base64
         imageMimeType = media.mimeType
@@ -120,7 +135,11 @@ export async function POST(req: NextRequest) {
     await saveMessage(from, 'user', messageText, messageId)
     console.log('Saved user message')
 
-    const reply = await chat(history, userText, summary, from, userProfile, imageBase64, imageMimeType, type)
+    const reply = await withTimeout(
+      chat(history, userText, summary, from, userProfile, imageBase64, imageMimeType, type),
+      CHAT_TIMEOUT_MS,
+      null
+    )
     console.log('Reply:', reply?.slice(0, 80))
 
     const safeReply = reply?.trim() || FALLBACK_REPLY
