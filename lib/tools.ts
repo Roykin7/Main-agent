@@ -1,10 +1,11 @@
 import OpenAI from 'openai'
-import { searchKnowledge, searchDiagnosisCases, getDevotion, type KnowledgeChunk, type DiagnosisCase } from './knowledge'
+import { searchKnowledge, searchDiagnosisCases, getDevotion, getCuratedDiseaseImage, type KnowledgeChunk, type DiagnosisCase } from './knowledge'
 import { detectScriptureRequest, getVerse, type BibleTranslation } from './bible'
 import { embed } from './embeddings'
 import { getSupabase } from './supabase'
 import { saveUserFact } from './user-profile'
 import { sendNewConvertEmail, type NewConvertData } from './email'
+import { sendImage } from './whatsapp'
 
 function degreesToCompass(deg: number): string {
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
@@ -227,6 +228,25 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
           },
         },
         required: ['symptoms'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'send_diagnosis_image',
+      description:
+        'Send the farmer a reference photo of a specific plant disease or pest, for visual comparison against what they are seeing. ONLY use this during an active diagnosis, after search_knowledge/search_diagnosis_cases — never for illustration, decoration, or general conversation, and never for Phaneroo/devotion content. Checks a curated, vetted photo library first; only falls back to a live web image search if nothing curated matches, and that fallback is clearly unverified. Call at most once per diagnosis, for the single most likely disease/pest.',
+      parameters: {
+        type: 'object',
+        properties: {
+          disease_or_pest: {
+            type: 'string',
+            description:
+              'The specific disease or pest name to illustrate, e.g. "Coffee Berry Disease", "Coffee Leaf Rust", "Antestia bug", "Black Coffee Twig Borer".',
+          },
+        },
+        required: ['disease_or_pest'],
       },
     },
   },
@@ -557,6 +577,71 @@ export async function executeToolCall(
           )
           .join('\n---\n')
       )
+    }
+
+    case 'send_diagnosis_image': {
+      const query = (args.disease_or_pest as string)?.trim()
+      if (!query) return 'No disease/pest name given — cannot look up a reference image.'
+      if (!context?.phone) return 'Cannot send an image outside of a WhatsApp conversation.'
+
+      // 1. Curated library first — vetted, accurate, no caveat needed.
+      let curated: Awaited<ReturnType<typeof getCuratedDiseaseImage>> = null
+      try {
+        curated = await getCuratedDiseaseImage(query)
+      } catch (err) {
+        console.error('send_diagnosis_image curated lookup error:', err)
+      }
+
+      if (curated) {
+        try {
+          await sendImage(
+            context.phone,
+            curated.imageUrl,
+            curated.caption ?? `${curated.diseaseName} — reference photo`
+          )
+        } catch (err) {
+          console.error('send_diagnosis_image sendImage (curated) error:', err)
+          return `Could not send the reference image for "${query}" — continue with a text description instead.`
+        }
+        return `Reference image sent (curated, source: ${curated.source ?? 'internal library'}): ${curated.diseaseName}. Do not describe it further — the farmer can see it.`
+      }
+
+      // 2. No vetted match — fall back to a live web image search, clearly caveated.
+      const apiKey = process.env.TAVILY_API_KEY
+      if (!apiKey) {
+        return `No curated reference image available for "${query}", and web image search is not configured — continue with a text description only.`
+      }
+
+      try {
+        const res = await fetch('https://api.tavily.com/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            api_key: apiKey,
+            query: `${query} coffee plant disease symptoms photo`,
+            search_depth: 'basic',
+            max_results: 3,
+            include_answer: false,
+            include_images: true,
+          }),
+        })
+        if (!res.ok) throw new Error(`Tavily ${res.status}`)
+        const data = await res.json()
+        const rawImages: any[] = data.images ?? []
+        const imageUrl: string | undefined = rawImages
+          .map((img) => (typeof img === 'string' ? img : img?.url))
+          .find((url) => typeof url === 'string' && url.length > 0)
+
+        if (!imageUrl) {
+          return `No reference image found for "${query}" (curated library and web search both came up empty) — continue with a text description only.`
+        }
+
+        await sendImage(context.phone, imageUrl, `${query} — reference photo (unverified, from the web)`)
+        return `Reference image sent (WEB-SOURCED, UNVERIFIED — not from our vetted library): ${query}. You must tell the farmer this photo is from the web and to confirm it matches what they're actually seeing before treating based on it.`
+      } catch (err) {
+        console.error('send_diagnosis_image web fallback error:', err)
+        return `Could not find or send a reference image for "${query}" — continue with a text description only.`
+      }
     }
 
     case 'store_diagnosis_case': {

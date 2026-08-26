@@ -74,6 +74,47 @@ export async function searchDiagnosisCases(symptoms: string): Promise<DiagnosisC
   }))
 }
 
+export type DiseaseImage = {
+  diseaseName: string
+  imageUrl: string
+  caption: string | null
+  source: string | null
+  similarity: number
+}
+
+// Below this similarity, the curated match is too loose to trust — better to
+// fall back to a live web search (clearly caveated) than send the wrong photo.
+const DISEASE_IMAGE_MATCH_THRESHOLD = 0.75
+
+/**
+ * Best curated reference photo for a disease/pest, or null if nothing
+ * in disease_images is a confident enough match for the given query.
+ */
+export async function getCuratedDiseaseImage(query: string): Promise<DiseaseImage | null> {
+  const queryEmbedding = await embed(query)
+
+  const { data, error } = await getSupabase().rpc('match_disease_images', {
+    query_embedding: queryEmbedding,
+    match_count: 1,
+  })
+
+  if (error) {
+    console.error('getCuratedDiseaseImage error:', error)
+    return null
+  }
+
+  const row = data?.[0]
+  if (!row || row.similarity < DISEASE_IMAGE_MATCH_THRESHOLD) return null
+
+  return {
+    diseaseName: row.disease_name,
+    imageUrl: row.image_url,
+    caption: row.caption,
+    source: row.source,
+    similarity: row.similarity,
+  }
+}
+
 export async function getDevotion(date: string): Promise<Devotion | null> {
   const { data, error } = await getSupabase()
     .from('devotions')

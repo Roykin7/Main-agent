@@ -49,6 +49,7 @@ const INFO_TOOLS = new Set([
   'get_weather',
   'get_commodity_price',
   'web_search',
+  'send_diagnosis_image',
 ])
 
 // Quality signal — logged when info tools are used, for domain-level analysis.
@@ -135,7 +136,7 @@ function buildVerifyPrompt(
 ${ctx}
 
 Review silently on five points:
-1. Accuracy — every fact, quantity, and recommendation is supported by the retrieved data. No invented diseases, chemicals, spray rates, or prices.
+1. Accuracy — every fact, quantity, and recommendation is supported by the retrieved data. No invented diseases, chemicals, spray rates, or prices. If the draft claims a reference image was sent, a send_diagnosis_image tool result must actually confirm that — and if that result was WEB-SOURCED/UNVERIFIED, the draft must say so explicitly, not present it as a confirmed match.
 2. Uganda context — advice is appropriate for Uganda: local varieties (SL28, SL34, RUIRU11, Robusta), altitude zones, UCDA/MAAIF guidance, farmgate vs international futures prices distinguished where relevant.
 3. Actionability — the farmer knows what to do, when, and with what. Vague advice with no specifics wastes their money.
 4. Confidence calibration — if retrieved info is thin or absent, the draft hedges ("from what I found" / "confirm with your extension officer") rather than inventing details to fill the gap.
