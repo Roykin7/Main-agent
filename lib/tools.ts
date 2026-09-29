@@ -5,16 +5,21 @@ import { embed } from './embeddings'
 import { getSupabase } from './supabase'
 import { saveUserFact } from './user-profile'
 import { sendNewConvertEmail, sendEscalationEmail, type NewConvertData } from './email'
-import { sendImage } from './whatsapp'
+import { sendImage, sendSlotList, sendConfirmButtons } from './whatsapp'
 import { BOOKING_CONFIG, type BookingDomain } from './booking-config'
 import {
   getAvailableSlots,
-  bookAppointment,
   findUpcomingAppointments,
-  cancelAppointmentById,
+  getAppointmentById,
   combineKampalaDateTime,
   formatAppointmentTime,
 } from './booking'
+import {
+  getPendingBooking,
+  upsertPendingBooking,
+  patchPendingBooking,
+  clearPendingBooking,
+} from './pending-booking'
 
 function degreesToCompass(deg: number): string {
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
@@ -355,7 +360,7 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
     function: {
       name: 'check_availability',
       description:
-        'Get open appointment slots for a service on a given date. ALWAYS call this before proposing a date/time to the user — never invent availability.',
+        "Sends the user a tappable list of open appointment slots for a service on a given date — ALWAYS call this before proposing any date/time, never invent availability. This SENDS the picker directly; do not also list the slots yourself in your reply, just tell the user you've sent some options and wait for their tap (they can also just type a time instead — handle that normally if they do). If the requested date has nothing open, this automatically finds and offers the next available date instead — the tool result tells you which date was actually used.",
       parameters: {
         type: 'object',
         properties: {
@@ -380,22 +385,41 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
   {
     type: 'function',
     function: {
-      name: 'book_appointment',
+      name: 'set_booking_details',
       description:
-        'Books a confirmed appointment. Only call after check_availability confirmed the slot is open AND the user has explicitly confirmed the date/time. Saves the booking, adds it to the calendar, and sends the user a PDF confirmation on WhatsApp.',
+        "Records details for the booking currently in progress (there must be a picked slot first — from check_availability's picker or the user typing a time). Call this once per piece of information as you collect it conversationally, one thing at a time — do not ask for name, reason, and location all in one message. Once everything required is collected, this automatically sends the user a Confirm/Change card — do NOT tell the user the booking is confirmed yourself, only the confirmation card (and the user tapping it) does that.",
       parameters: {
         type: 'object',
         properties: {
-          domain: { type: 'string', enum: ['coffee', 'phaneroo'] },
-          service_name: {
-            type: 'string',
-            description: 'Exact service name from that domain\'s service list',
-          },
-          date: { type: 'string', description: '"YYYY-MM-DD", "today", or "tomorrow"' },
-          time: { type: 'string', description: '24-hour "HH:MM", e.g. "14:30"' },
           attendee_name: { type: 'string', description: "The person's full name" },
+          reason: {
+            type: 'string',
+            description:
+              'Why they need this appointment — for coffee, the problem/symptoms so the agronomist can prepare; for Phaneroo, the general topic if they choose to share (never pressure this).',
+          },
+          location: {
+            type: 'string',
+            description: 'Where the appointment happens — for coffee, the farm address/location. Not needed for Phaneroo.',
+          },
         },
-        required: ['domain', 'service_name', 'date', 'time', 'attendee_name'],
+        required: [],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'reschedule_appointment',
+      description:
+        "Starts rescheduling one of the user's upcoming appointments to a new date/time. Look up which appointment first via cancel_appointment's lookup behavior if the id isn't already known from context. Sends a Confirm/Change card recapping old time → new time — do not tell the user it's rescheduled yourself, only the card (and their tap) does that.",
+      parameters: {
+        type: 'object',
+        properties: {
+          appointment_id: { type: 'number', description: 'The appointment to reschedule' },
+          date: { type: 'string', description: 'New date — "YYYY-MM-DD", "today", or "tomorrow"' },
+          time: { type: 'string', description: 'New time, 24-hour "HH:MM"' },
+        },
+        required: ['appointment_id', 'date', 'time'],
       },
     },
   },
@@ -404,7 +428,7 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
     function: {
       name: 'cancel_appointment',
       description:
-        "Cancels one of the user's upcoming appointments. Call with no appointment_id first to look up what they have — if there's more than one, ask which before cancelling. Never ask for their name or phone number — the system looks them up automatically from the conversation.",
+        "Looks up and starts cancelling one of the user's upcoming appointments. Call with no appointment_id first to look up what they have — if there's more than one, ask which before cancelling. Once an id is given, sends a Yes/Keep it confirmation card — do not tell the user it's cancelled yourself, only the card (and their tap) does that. Never ask for their name or phone number — the system looks them up automatically from the conversation.",
       parameters: {
         type: 'object',
         properties: {
@@ -899,7 +923,9 @@ export async function executeToolCall(
       const domain = args.domain as BookingDomain
       const serviceName = (args.service_name as string)?.trim()
       const dateStr = resolveDate(args.date as string)
+      const phone = context?.phone
 
+      if (!phone) return 'Cannot check availability outside of a WhatsApp conversation.'
       if (!domain || !BOOKING_CONFIG[domain]) return 'Invalid domain — must be "coffee" or "phaneroo".'
 
       const service = BOOKING_CONFIG[domain].services.find((s) => s.name === serviceName)
@@ -908,58 +934,147 @@ export async function executeToolCall(
         return `Unknown service "${serviceName}" for ${domain}. Valid services: ${names}.`
       }
 
-      let slots
+      let slots, dateUsed
       try {
-        slots = await getAvailableSlots(domain, serviceName, dateStr)
+        ;({ slots, dateUsed } = await getAvailableSlots(domain, serviceName, dateStr))
       } catch (err) {
         console.error('check_availability error:', err)
         return 'Could not check availability right now — try again in a moment.'
       }
 
       if (slots.length === 0) {
-        return `No open slots for ${serviceName} on ${dateStr}. Suggest the user try a different date.`
+        return `No open slots for ${serviceName} in the next two weeks. Let the user know and suggest they check back later.`
       }
-      return `Available slots for ${serviceName} on ${dateStr}:\n` + slots.map((s) => `- ${s.label}`).join('\n')
+
+      // "|" as the field separator, not ":" — startsAt is an ISO timestamp
+      // and would collide with a ":"-delimited split.
+      const rows = slots.map((s) => ({
+        id: `slot:${domain}|${serviceName}|${s.startsAt.toISOString()}`,
+        title: s.label,
+      }))
+
+      try {
+        await sendSlotList(phone, `Available times for ${serviceName}:`, rows)
+      } catch (err) {
+        console.error('check_availability sendSlotList error:', err)
+        return (
+          `Available slots for ${serviceName} on ${dateUsed}:\n` +
+          slots.map((s) => `- ${s.label}`).join('\n') +
+          '\n(Could not send an interactive picker — list these to the user as text instead, this one time.)'
+        )
+      }
+
+      const dateNote =
+        dateUsed === dateStr ? '' : ` (nothing was open on ${dateStr} — these are for the next available date, ${dateUsed})`
+      return `Sent an interactive slot picker with ${slots.length} option(s)${dateNote} — do not list the slots yourself, just briefly tell the user you've sent some options. They may tap one or just type a time; either way, wait for their reply.`
     }
 
-    case 'book_appointment': {
-      const domain = args.domain as BookingDomain
-      const serviceName = (args.service_name as string)?.trim()
+    case 'set_booking_details': {
+      const phone = context?.phone
+      if (!phone) return 'Cannot manage a booking outside of a WhatsApp conversation.'
+
+      const pending = await getPendingBooking(phone)
+      if (!pending) return 'No booking in progress — the user needs to pick a slot first via check_availability.'
+
+      const attendeeName = (args.attendee_name as string | undefined)?.trim()
+      const reason = (args.reason as string | undefined)?.trim()
+      const location = (args.location as string | undefined)?.trim()
+
+      await patchPendingBooking(phone, {
+        ...(attendeeName ? { attendeeName } : {}),
+        ...(reason ? { reason } : {}),
+        ...(location ? { location } : {}),
+      })
+
+      const merged = {
+        attendeeName: attendeeName || pending.attendeeName,
+        reason: reason || pending.reason,
+        location: location || pending.location,
+      }
+
+      const config = BOOKING_CONFIG[pending.domain]
+      const missing: string[] = []
+      if (!merged.attendeeName) missing.push('their full name')
+      if (config.reasonRequired && !merged.reason) missing.push('the reason for the visit')
+      if (config.requiresLocation && !merged.location) missing.push('the farm location')
+
+      if (missing.length > 0) {
+        return `Saved. Still need: ${missing[0]}. Ask for just that one thing next — never ask for more than one at a time.`
+      }
+
+      const recapLines = [
+        'Confirm this booking?',
+        config.label,
+        pending.serviceName,
+        formatAppointmentTime(pending.startsAt),
+        `Name: ${merged.attendeeName}`,
+      ]
+      if (merged.location) recapLines.push(`Location: ${merged.location}`)
+      if (merged.reason) recapLines.push(`Reason: ${merged.reason}`)
+
+      try {
+        await sendConfirmButtons(phone, recapLines.join('\n'), [
+          { id: 'confirm_booking', title: 'Confirm' },
+          { id: 'change_booking', title: 'Change' },
+        ])
+      } catch (err) {
+        console.error('set_booking_details sendConfirmButtons error:', err)
+        return 'Everything is collected, but the confirmation card could not be sent — tell the user to try again shortly.'
+      }
+
+      return 'All details collected — sent a Confirm/Change card. Do NOT say the booking is confirmed yourself; only the user tapping Confirm does that.'
+    }
+
+    case 'reschedule_appointment': {
+      const phone = context?.phone
+      if (!phone) return 'Cannot manage appointments outside of a WhatsApp conversation.'
+
+      const appointmentId = args.appointment_id as number
       const dateStr = resolveDate(args.date as string)
       const time = (args.time as string)?.trim()
-      const attendeeName = (args.attendee_name as string)?.trim()
-      const phone = context?.phone
 
-      if (!phone) return 'Cannot book outside of a WhatsApp conversation.'
-      if (!domain || !BOOKING_CONFIG[domain]) return 'Invalid domain — must be "coffee" or "phaneroo".'
-      if (!serviceName || !time || !attendeeName) {
-        return 'Missing service, time, or attendee name — collect all of these before calling book_appointment.'
+      if (!appointmentId || !time) return 'Missing appointment_id or time.'
+
+      const existing = await getAppointmentById(appointmentId, phone)
+      if (!existing) return 'That appointment was not found for this number.'
+
+      const service = BOOKING_CONFIG[existing.domain].services.find((s) => s.name === existing.serviceName)
+      if (!service) return 'Internal config error — that service no longer exists for this domain.'
+
+      const newStartsAt = combineKampalaDateTime(dateStr, time)
+      const newEndsAt = new Date(newStartsAt.getTime() + service.durationMinutes * 60_000)
+
+      await upsertPendingBooking({
+        phone,
+        kind: 'reschedule',
+        targetAppointmentId: appointmentId,
+        domain: existing.domain,
+        serviceName: existing.serviceName,
+        startsAt: newStartsAt,
+        endsAt: newEndsAt,
+        attendeeName: existing.attendeeName,
+        reason: existing.reason,
+        location: existing.location,
+      })
+
+      const recapLines = [
+        'Confirm this reschedule?',
+        existing.serviceName,
+        `From: ${formatAppointmentTime(existing.startsAt)}`,
+        `To: ${formatAppointmentTime(newStartsAt.toISOString())}`,
+      ]
+
+      try {
+        await sendConfirmButtons(phone, recapLines.join('\n'), [
+          { id: 'confirm_booking', title: 'Confirm' },
+          { id: 'change_booking', title: 'Change' },
+        ])
+      } catch (err) {
+        console.error('reschedule_appointment sendConfirmButtons error:', err)
+        return 'Could not send the confirmation card — tell the user to try again shortly.'
       }
 
-      const startsAt = combineKampalaDateTime(dateStr, time)
-      const result = await bookAppointment({ domain, serviceName, startsAt, phone, attendeeName })
-
-      if (!result.ok) {
-        if (result.reason === 'slot_taken') {
-          return 'That slot was just taken by someone else — call check_availability again and offer the user different options.'
-        }
-        if (result.reason === 'invalid') {
-          const names = BOOKING_CONFIG[domain].services.map((s) => s.name).join(', ')
-          return `Invalid service name for ${domain}. Valid services: ${names}.`
-        }
-        return 'Could not save the booking due to a system error — apologize and ask the user to try again shortly.'
-      }
-
-      const parts = [`Booked: ${serviceName} for ${attendeeName} on ${dateStr} at ${time}.`]
-      parts.push(
-        result.pdfDelivered
-          ? 'A PDF confirmation was sent on WhatsApp — tell the user to check for it.'
-          : '(Internal note, do not mention to the user unless they ask: the PDF confirmation could not be delivered — booking is still confirmed.)'
-      )
-      if (!result.calendarSynced) {
-        parts.push('(Internal note, do not mention to the user: calendar sync failed — booking is still confirmed in our system.)')
-      }
-      return parts.join(' ')
+      return 'Sent a Confirm/Change card recapping the reschedule. Do NOT say it is rescheduled yourself; only the user tapping Confirm does that.'
     }
 
     case 'cancel_appointment': {
@@ -979,7 +1094,7 @@ export async function executeToolCall(
         if (upcoming.length === 0) return 'No upcoming appointments found for this number.'
         if (upcoming.length === 1) {
           const a = upcoming[0]
-          return `One upcoming appointment: #${a.id} — ${a.serviceName} on ${formatAppointmentTime(a.startsAt)}. Confirm with the user before cancelling, then call cancel_appointment again with this appointment_id.`
+          return `One upcoming appointment: #${a.id} — ${a.serviceName} on ${formatAppointmentTime(a.startsAt)}. Confirm with the user this is the one before cancelling, then call cancel_appointment again with this appointment_id.`
         }
         return (
           'Multiple upcoming appointments:\n' +
@@ -988,11 +1103,24 @@ export async function executeToolCall(
         )
       }
 
-      const result = await cancelAppointmentById(appointmentId, phone)
-      if (!result.ok) {
-        return 'Could not cancel — that appointment was not found for this number, or was already cancelled.'
+      const existing = await getAppointmentById(appointmentId, phone)
+      if (!existing) return 'That appointment was not found for this number, or was already cancelled.'
+
+      try {
+        await sendConfirmButtons(
+          phone,
+          `Cancel this appointment?\n${existing.serviceName} on ${formatAppointmentTime(existing.startsAt)}`,
+          [
+            { id: `confirm_cancel:${existing.id}`, title: 'Yes, cancel' },
+            { id: 'keep_appointment', title: 'Keep it' },
+          ]
+        )
+      } catch (err) {
+        console.error('cancel_appointment sendConfirmButtons error:', err)
+        return 'Could not send the confirmation card — tell the user to try again shortly.'
       }
-      return 'Cancelled successfully.'
+
+      return 'Sent a Yes/Keep-it card. Do NOT say it is cancelled yourself; only the user tapping Yes does that.'
     }
 
     default:

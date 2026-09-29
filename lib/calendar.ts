@@ -37,6 +37,8 @@ export async function createCalendarEvent(input: {
   phone: string
   startsAt: Date
   endsAt: Date
+  reason?: string | null
+  location?: string | null
 }): Promise<string | null> {
   const username = process.env.CAL_USERNAME
   if (!username) {
@@ -64,6 +66,8 @@ export async function createCalendarEvent(input: {
           phone: input.phone,
           service: input.serviceName,
           source: 'zoe-whatsapp',
+          ...(input.reason ? { reason: input.reason } : {}),
+          ...(input.location ? { location: input.location } : {}),
         },
       }),
     })
@@ -81,6 +85,40 @@ export async function createCalendarEvent(input: {
     return uid
   } catch (err) {
     console.error('createCalendarEvent error:', err)
+    return null
+  }
+}
+
+/**
+ * Reschedules a Cal.com booking to a new start time. Cal.com mints a NEW
+ * booking uid on reschedule (the old uid's `rescheduledToUid` points to it) —
+ * callers must overwrite their stored calendar_event_id with the returned
+ * value, not assume it stays the same. Returns null on failure (logged,
+ * never throws) — same "local DB is the source of truth" reasoning as
+ * createCalendarEvent.
+ */
+export async function rescheduleCalendarEvent(
+  bookingUid: string,
+  newStartsAt: Date
+): Promise<string | null> {
+  try {
+    const res = await fetch(`${CAL_API_BASE}/bookings/${bookingUid}/reschedule`, {
+      method: 'POST',
+      headers: calHeaders(),
+      body: JSON.stringify({ start: newStartsAt.toISOString() }),
+    })
+
+    if (!res.ok) {
+      console.error(`rescheduleCalendarEvent failed (${res.status}):`, await res.text())
+      return null
+    }
+
+    const body = await res.json()
+    const uid = body?.data?.uid ?? body?.uid ?? null
+    if (!uid) console.error('rescheduleCalendarEvent: no booking uid in response', body)
+    return uid
+  } catch (err) {
+    console.error('rescheduleCalendarEvent error:', err)
     return null
   }
 }

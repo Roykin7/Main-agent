@@ -18,6 +18,14 @@ import { loadUserProfile } from '@/lib/user-profile'
 import { withTimeout } from '@/lib/timeout'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { acquirePhoneLock, releasePhoneLock } from '@/lib/phone-lock'
+import {
+  bookAppointment,
+  rescheduleAppointment,
+  cancelAppointmentById,
+  formatAppointmentTime,
+} from '@/lib/booking'
+import { getPendingBooking, upsertPendingBooking, clearPendingBooking } from '@/lib/pending-booking'
+import { BOOKING_CONFIG, type BookingDomain } from '@/lib/booking-config'
 
 // Hard ceiling for this function on Vercel. Keep the internal timeouts below
 // comfortably under this so there's always time left to send a reply before
@@ -43,6 +51,129 @@ const STILL_PROCESSING_REPLY = "Still replying to your last message — give me 
 const RATE_LIMIT_REPLIES = {
   burst: "You're sending messages a bit fast for me to keep up — give me a minute and try again.",
   daily: "You've reached today's message limit with me — please try again tomorrow. For anything urgent, reach out to your local extension officer.",
+}
+
+type InteractiveOutcome =
+  | { kind: 'direct_reply'; reply: string }
+  | { kind: 'continue'; syntheticText: string }
+  | { kind: 'passthrough' }
+
+/**
+ * Handles a tapped WhatsApp list row / button deterministically — these are
+ * the two moments (which slot was picked, whether a booking write actually
+ * happens) that must not depend on the model re-parsing free text. Anything
+ * unrecognized falls through to the normal AI pipeline unchanged.
+ */
+async function handleInteractive(interactiveId: string, from: string): Promise<InteractiveOutcome> {
+  if (interactiveId.startsWith('slot:')) {
+    const parts = interactiveId.slice('slot:'.length).split('|')
+    if (parts.length !== 3) return { kind: 'passthrough' }
+    const [domain, serviceName, iso] = parts as [BookingDomain, string, string]
+
+    const startsAt = new Date(iso)
+    const config = BOOKING_CONFIG[domain]
+    const service = config?.services.find((s) => s.name === serviceName)
+    if (!config || !service || isNaN(startsAt.getTime())) return { kind: 'passthrough' }
+
+    const endsAt = new Date(startsAt.getTime() + service.durationMinutes * 60_000)
+
+    // Preserve any already-collected fields (mid-reschedule, or re-picking a slot)
+    const existing = await getPendingBooking(from)
+    await upsertPendingBooking({
+      phone: from,
+      kind: existing?.kind ?? 'book',
+      targetAppointmentId: existing?.targetAppointmentId ?? null,
+      domain,
+      serviceName,
+      startsAt,
+      endsAt,
+      attendeeName: existing?.attendeeName ?? null,
+      reason: existing?.reason ?? null,
+      location: existing?.location ?? null,
+    })
+
+    return {
+      kind: 'continue',
+      syntheticText: `I'd like the ${formatAppointmentTime(startsAt.toISOString())} slot for ${serviceName}.`,
+    }
+  }
+
+  if (interactiveId === 'confirm_booking') {
+    const pending = await getPendingBooking(from)
+    if (!pending) {
+      return { kind: 'direct_reply', reply: "That booking isn't pending anymore — let's start again, what would you like to book?" }
+    }
+
+    if (pending.kind === 'book') {
+      if (!pending.attendeeName) {
+        return { kind: 'direct_reply', reply: "I'm still missing your name for this booking — what's your full name?" }
+      }
+      const result = await bookAppointment({
+        domain: pending.domain,
+        serviceName: pending.serviceName,
+        startsAt: new Date(pending.startsAt),
+        phone: from,
+        attendeeName: pending.attendeeName,
+        reason: pending.reason,
+        location: pending.location,
+      })
+      await clearPendingBooking(from)
+
+      if (!result.ok) {
+        if (result.reason === 'slot_taken') {
+          return { kind: 'direct_reply', reply: 'Sorry, that slot was just taken by someone else — message me again to pick another time.' }
+        }
+        return { kind: 'direct_reply', reply: 'Something went wrong saving your booking — please try again shortly.' }
+      }
+      const pdfNote = result.pdfDelivered ? ' A PDF confirmation is on its way.' : ''
+      return {
+        kind: 'direct_reply',
+        reply: `Booked! ${pending.serviceName} on ${formatAppointmentTime(pending.startsAt)}.${pdfNote}`,
+      }
+    }
+
+    // kind === 'reschedule'
+    if (!pending.targetAppointmentId) {
+      await clearPendingBooking(from)
+      return { kind: 'direct_reply', reply: "Something's off with this reschedule — let's start again." }
+    }
+    const result = await rescheduleAppointment(
+      pending.targetAppointmentId,
+      from,
+      new Date(pending.startsAt),
+      new Date(pending.endsAt)
+    )
+    await clearPendingBooking(from)
+
+    if (!result.ok) {
+      if (result.reason === 'slot_taken') {
+        return { kind: 'direct_reply', reply: 'That new slot was just taken — message me again to pick another time.' }
+      }
+      if (result.reason === 'not_found') {
+        return { kind: 'direct_reply', reply: "Couldn't find that appointment anymore." }
+      }
+      return { kind: 'direct_reply', reply: 'Something went wrong rescheduling — please try again shortly.' }
+    }
+    return { kind: 'direct_reply', reply: `Rescheduled to ${formatAppointmentTime(pending.startsAt)}.` }
+  }
+
+  if (interactiveId === 'change_booking') {
+    await clearPendingBooking(from)
+    return { kind: 'direct_reply', reply: 'No problem — what would you like to change?' }
+  }
+
+  if (interactiveId.startsWith('confirm_cancel:')) {
+    const id = Number(interactiveId.slice('confirm_cancel:'.length))
+    if (!Number.isFinite(id)) return { kind: 'passthrough' }
+    const result = await cancelAppointmentById(id, from)
+    return { kind: 'direct_reply', reply: result.ok ? 'Cancelled.' : "Couldn't cancel that — it may already be cancelled." }
+  }
+
+  if (interactiveId === 'keep_appointment') {
+    return { kind: 'direct_reply', reply: 'Okay, keeping it.' }
+  }
+
+  return { kind: 'passthrough' }
 }
 
 export async function GET(req: NextRequest) {
@@ -107,12 +238,32 @@ export async function POST(req: NextRequest) {
 
   try {
     console.log(`[${type}] from ${from}`)
+
+    let userText = text
+
+    // A tapped list row / button — the two moments (which slot, whether a
+    // booking write happens) that must not depend on the model re-parsing
+    // free text. See handleInteractive for the full branch.
+    if (incoming.interactiveId) {
+      const outcome = await handleInteractive(incoming.interactiveId, from)
+      if (outcome.kind === 'direct_reply') {
+        await saveMessage(from, 'user', text || '[interactive reply]', messageId)
+        await sendLongText(from, outcome.reply)
+        await saveMessage(from, 'model', outcome.reply)
+        console.log('Done (deterministic reply)')
+        return NextResponse.json({ ok: true })
+      }
+      if (outcome.kind === 'continue') {
+        userText = outcome.syntheticText
+      }
+      // 'passthrough' — fall through with the original text unchanged
+    }
+
     const [{ summary, messages: history, totalCount }, userProfile] = await Promise.all([
       getConversationContext(from),
       loadUserProfile(from),
     ])
 
-    let userText = text
     let imageBase64: string | undefined
     let imageMimeType: string | undefined
 

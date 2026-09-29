@@ -1,8 +1,8 @@
 import { getSupabase } from './supabase'
 import { BOOKING_CONFIG, type BookingDomain } from './booking-config'
-import { createCalendarEvent, deleteCalendarEvent } from './calendar'
+import { createCalendarEvent, deleteCalendarEvent, rescheduleCalendarEvent } from './calendar'
 import { buildAppointmentConfirmationPdf } from './pdf'
-import { uploadMedia, sendDocument } from './whatsapp'
+import { uploadMedia, sendDocument, sendLongText } from './whatsapp'
 
 const TIMEZONE = 'Africa/Kampala'
 // Africa/Kampala is UTC+3 year-round (no DST) — safe to hardcode the offset
@@ -19,6 +19,8 @@ export type Appointment = {
   endsAt: string // ISO
   calendarEventId: string | null // Cal.com booking uid
   status: 'confirmed' | 'cancelled'
+  reason: string | null
+  location: string | null
 }
 
 /** Combines a "YYYY-MM-DD" date and "HH:MM" time (both Kampala-local) into an absolute instant. */
@@ -46,12 +48,14 @@ export function formatAppointmentTime(iso: string): string {
 
 export type AvailableSlot = { startsAt: Date; label: string }
 
-/**
- * Computes open slots for a service on a given date: business-hours slots
- * minus anything already confirmed in `appointments`. Never invents
- * availability — an empty/errored result just means "no slots to offer."
- */
-export async function getAvailableSlots(
+function addDays(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split('-').map(Number)
+  const dt = new Date(Date.UTC(y, m - 1, d + days))
+  return dt.toISOString().slice(0, 10)
+}
+
+/** Slots for exactly one date — no forward-scanning. Used internally by getAvailableSlots. */
+async function getSlotsForExactDate(
   domain: BookingDomain,
   serviceName: string,
   dateStr: string
@@ -74,7 +78,7 @@ export async function getAvailableSlots(
     .gt('ends_at', dayStart.toISOString())
 
   if (error) {
-    console.error('getAvailableSlots error:', error)
+    console.error('getSlotsForExactDate error:', error)
     return []
   }
 
@@ -98,6 +102,35 @@ export async function getAvailableSlots(
   return slots.slice(0, 6)
 }
 
+const FORWARD_SCAN_DAYS = 14
+
+/**
+ * Computes open slots for a service on a given date: business-hours slots
+ * minus anything already confirmed in `appointments`. Never invents
+ * availability — an empty/errored result just means "no slots to offer."
+ *
+ * If the requested date has nothing open, scans forward (up to
+ * FORWARD_SCAN_DAYS) for the first date that does, so the caller can offer
+ * that instead of the model having to guess-and-retry with different dates.
+ * `dateUsed` tells the caller which date the returned slots are actually for.
+ */
+export async function getAvailableSlots(
+  domain: BookingDomain,
+  serviceName: string,
+  dateStr: string
+): Promise<{ slots: AvailableSlot[]; dateUsed: string }> {
+  const direct = await getSlotsForExactDate(domain, serviceName, dateStr)
+  if (direct.length > 0) return { slots: direct, dateUsed: dateStr }
+
+  for (let i = 1; i <= FORWARD_SCAN_DAYS; i++) {
+    const candidate = addDays(dateStr, i)
+    const slots = await getSlotsForExactDate(domain, serviceName, candidate)
+    if (slots.length > 0) return { slots, dateUsed: candidate }
+  }
+
+  return { slots: [], dateUsed: dateStr }
+}
+
 export type BookAppointmentResult =
   | { ok: true; appointment: Appointment; calendarSynced: boolean; pdfDelivered: boolean }
   | { ok: false; reason: 'slot_taken' | 'invalid' | 'db_error' }
@@ -115,6 +148,8 @@ export async function bookAppointment(input: {
   startsAt: Date
   phone: string
   attendeeName: string
+  reason?: string | null
+  location?: string | null
 }): Promise<BookAppointmentResult> {
   const config = BOOKING_CONFIG[input.domain]
   const service = config.services.find((s) => s.name === input.serviceName)
@@ -131,8 +166,10 @@ export async function bookAppointment(input: {
       attendee_name: input.attendeeName,
       starts_at: input.startsAt.toISOString(),
       ends_at: endsAt.toISOString(),
+      reason: input.reason ?? null,
+      location: input.location ?? null,
     })
-    .select('id, domain, service_name, phone, attendee_name, starts_at, ends_at, status')
+    .select('id, domain, service_name, phone, attendee_name, starts_at, ends_at, status, reason, location')
     .single()
 
   if (error) {
@@ -152,6 +189,8 @@ export async function bookAppointment(input: {
     endsAt: data.ends_at,
     calendarEventId: null,
     status: data.status,
+    reason: data.reason,
+    location: data.location,
   }
 
   let calendarSynced = false
@@ -163,6 +202,8 @@ export async function bookAppointment(input: {
       phone: input.phone,
       startsAt: input.startsAt,
       endsAt,
+      reason: input.reason,
+      location: input.location,
     })
     if (eventId) {
       await getSupabase().from('appointments').update({ calendar_event_id: eventId }).eq('id', appointment.id)
@@ -186,10 +227,29 @@ export async function bookAppointment(input: {
   return { ok: true, appointment, calendarSynced, pdfDelivered }
 }
 
+const APPOINTMENT_COLUMNS =
+  'id, domain, service_name, phone, attendee_name, starts_at, ends_at, calendar_event_id, status, reason, location'
+
+function appointmentFromRow(r: any): Appointment {
+  return {
+    id: r.id,
+    domain: r.domain,
+    serviceName: r.service_name,
+    phone: r.phone,
+    attendeeName: r.attendee_name,
+    startsAt: r.starts_at,
+    endsAt: r.ends_at,
+    calendarEventId: r.calendar_event_id,
+    status: r.status,
+    reason: r.reason,
+    location: r.location,
+  }
+}
+
 export async function findUpcomingAppointments(phone: string): Promise<Appointment[]> {
   const { data, error } = await getSupabase()
     .from('appointments')
-    .select('id, domain, service_name, phone, attendee_name, starts_at, ends_at, calendar_event_id, status')
+    .select(APPOINTMENT_COLUMNS)
     .eq('phone', phone)
     .eq('status', 'confirmed')
     .gt('starts_at', new Date().toISOString())
@@ -200,17 +260,23 @@ export async function findUpcomingAppointments(phone: string): Promise<Appointme
     return []
   }
 
-  return (data ?? []).map((r) => ({
-    id: r.id,
-    domain: r.domain,
-    serviceName: r.service_name,
-    phone: r.phone,
-    attendeeName: r.attendee_name,
-    startsAt: r.starts_at,
-    endsAt: r.ends_at,
-    calendarEventId: r.calendar_event_id,
-    status: r.status,
-  }))
+  return (data ?? []).map(appointmentFromRow)
+}
+
+export async function getAppointmentById(id: number, phone: string): Promise<Appointment | null> {
+  const { data, error } = await getSupabase()
+    .from('appointments')
+    .select(APPOINTMENT_COLUMNS)
+    .eq('id', id)
+    .eq('phone', phone)
+    .eq('status', 'confirmed')
+    .maybeSingle()
+
+  if (error) {
+    console.error('getAppointmentById error:', error)
+    return null
+  }
+  return data ? appointmentFromRow(data) : null
 }
 
 /**
@@ -237,4 +303,106 @@ export async function cancelAppointmentById(id: number, phone: string): Promise<
   }
 
   return { ok: true }
+}
+
+export type RescheduleAppointmentResult =
+  | { ok: true; appointment: Appointment; calendarSynced: boolean }
+  | { ok: false; reason: 'not_found' | 'slot_taken' | 'db_error' }
+
+/**
+ * Moves an existing appointment to a new time. The exclusion constraint on
+ * `appointments` guards UPDATEs the same way it guards INSERTs, so this is
+ * just as race-safe as a fresh booking. Cal.com's reschedule endpoint mints
+ * a new booking uid — calendar_event_id is overwritten with it.
+ */
+export async function rescheduleAppointment(
+  appointmentId: number,
+  phone: string,
+  newStartsAt: Date,
+  newEndsAt: Date
+): Promise<RescheduleAppointmentResult> {
+  const existing = await getAppointmentById(appointmentId, phone)
+  if (!existing) return { ok: false, reason: 'not_found' }
+
+  const { data, error } = await getSupabase()
+    .from('appointments')
+    .update({ starts_at: newStartsAt.toISOString(), ends_at: newEndsAt.toISOString() })
+    .eq('id', appointmentId)
+    .eq('phone', phone)
+    .eq('status', 'confirmed')
+    .select(APPOINTMENT_COLUMNS)
+    .maybeSingle()
+
+  if (error) {
+    if (error.code === '23P01') return { ok: false, reason: 'slot_taken' }
+    console.error('rescheduleAppointment update error:', error)
+    return { ok: false, reason: 'db_error' }
+  }
+  if (!data) return { ok: false, reason: 'not_found' }
+
+  let appointment = appointmentFromRow(data)
+  let calendarSynced = false
+
+  if (existing.calendarEventId) {
+    try {
+      const newUid = await rescheduleCalendarEvent(existing.calendarEventId, newStartsAt)
+      if (newUid) {
+        await getSupabase().from('appointments').update({ calendar_event_id: newUid }).eq('id', appointmentId)
+        appointment = { ...appointment, calendarEventId: newUid }
+        calendarSynced = true
+      }
+    } catch (err) {
+      console.error('rescheduleAppointment calendar sync error:', err)
+    }
+  }
+
+  return { ok: true, appointment, calendarSynced }
+}
+
+const REMINDER_WINDOW_START_MS = 23 * 3600_000
+const REMINDER_WINDOW_END_MS = 25 * 3600_000
+
+/**
+ * Sends a WhatsApp reminder for every confirmed appointment starting in the
+ * next 23-25h that hasn't already had one sent, and marks each as sent.
+ * The 2-hour window (vs. exactly 24h) gives a 15-minute cron cadence room
+ * to catch every appointment without double-sending.
+ */
+export async function sendDueReminders(): Promise<number> {
+  const now = Date.now()
+  const windowStart = new Date(now + REMINDER_WINDOW_START_MS).toISOString()
+  const windowEnd = new Date(now + REMINDER_WINDOW_END_MS).toISOString()
+
+  const { data, error } = await getSupabase()
+    .from('appointments')
+    .select(APPOINTMENT_COLUMNS)
+    .eq('status', 'confirmed')
+    .eq('reminder_sent', false)
+    .gte('starts_at', windowStart)
+    .lt('starts_at', windowEnd)
+
+  if (error) {
+    console.error('sendDueReminders query error:', error)
+    return 0
+  }
+
+  let sent = 0
+  for (const row of data ?? []) {
+    const appointment = appointmentFromRow(row)
+    const lines = [
+      `Reminder: your ${appointment.serviceName} is tomorrow at ${formatAppointmentTime(appointment.startsAt)}.`,
+    ]
+    if (appointment.location) lines.push(`Location: ${appointment.location}`)
+    lines.push('Message ZOE if you need to cancel or reschedule.')
+
+    try {
+      await sendLongText(appointment.phone, lines.join(' '))
+      await getSupabase().from('appointments').update({ reminder_sent: true }).eq('id', appointment.id)
+      sent++
+    } catch (err) {
+      console.error(`sendDueReminders send error for appointment ${appointment.id}:`, err)
+    }
+  }
+
+  return sent
 }

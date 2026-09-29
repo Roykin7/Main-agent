@@ -37,6 +37,8 @@ export async function buildAppointmentConfirmationPdf(appointment: Appointment):
   draw(`Date & time: ${dateTimeLabel} (Africa/Kampala)`)
   draw(`Name: ${appointment.attendeeName}`)
   draw(`Phone: ${appointment.phone}`)
+  if (appointment.location) draw(`Location: ${appointment.location}`)
+  if (appointment.reason) draw(`Reason: ${appointment.reason}`)
   draw(`Reference: #${appointment.id}`)
   y -= 20
   draw('If you need to cancel or reschedule, just message ZOE on WhatsApp.', { size: 10 })

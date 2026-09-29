@@ -110,6 +110,96 @@ export async function sendImage(to: string, imageUrl: string, caption?: string):
   }
 }
 
+export type InteractiveListRow = { id: string; title: string; description?: string }
+
+/**
+ * Sends a tappable list of options (e.g. appointment slots) instead of a
+ * wall of text the user has to type back. WhatsApp caps this at 10 rows
+ * and a 24-char row title, 72-char row description.
+ * Same retry policy as sendImage.
+ */
+export async function sendSlotList(
+  to: string,
+  bodyText: string,
+  rows: InteractiveListRow[]
+): Promise<void> {
+  const url = apiUrl(`${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`)
+  const delays = [1500]
+
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to,
+        type: 'interactive',
+        interactive: {
+          type: 'list',
+          body: { text: bodyText },
+          action: {
+            button: 'Pick a time',
+            sections: [{ title: 'Available slots', rows: rows.slice(0, 10) }],
+          },
+        },
+      }),
+    })
+
+    if (res.ok) return
+    if (attempt === delays.length) {
+      const errorBody = await res.text()
+      throw new Error(`WhatsApp sendSlotList failed (${res.status}): ${errorBody}`)
+    }
+    await new Promise((r) => setTimeout(r, delays[attempt]))
+  }
+}
+
+/**
+ * Sends up to 3 tappable buttons (e.g. Confirm/Change) so the recipient's
+ * exact choice is unambiguous — no re-parsing a typed "yes". Button titles
+ * are capped at 20 chars by WhatsApp. Same retry policy as sendImage.
+ */
+export async function sendConfirmButtons(
+  to: string,
+  bodyText: string,
+  buttons: { id: string; title: string }[]
+): Promise<void> {
+  const url = apiUrl(`${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`)
+  const delays = [1500]
+
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to,
+        type: 'interactive',
+        interactive: {
+          type: 'button',
+          body: { text: bodyText },
+          action: {
+            buttons: buttons.slice(0, 3).map((b) => ({ type: 'reply', reply: { id: b.id, title: b.title } })),
+          },
+        },
+      }),
+    })
+
+    if (res.ok) return
+    if (attempt === delays.length) {
+      const errorBody = await res.text()
+      throw new Error(`WhatsApp sendConfirmButtons failed (${res.status}): ${errorBody}`)
+    }
+    await new Promise((r) => setTimeout(r, delays[attempt]))
+  }
+}
+
 /**
  * Uploads a binary file (e.g. a generated PDF) to WhatsApp's media store and
  * returns its media id. Uploading first (instead of hosting the file at a
@@ -241,6 +331,11 @@ export type IncomingMessage = {
   messageId: string
   type: MessageType
   mediaId?: string
+  // Machine-readable id from a tapped interactive list row or button
+  // (e.g. "slot:coffee:Farm visit consultation:2026-09-30T10:00:00.000Z" or
+  // "confirm_booking"). `text` still holds the human-readable title for
+  // history/logging — this carries the value code should actually branch on.
+  interactiveId?: string
 }
 
 /**
@@ -303,15 +398,16 @@ export function parseIncomingMessage(payload: any): IncomingMessage | null {
     return { from, messageId, type: 'sticker', text: '' }
   }
 
-  // interactive button_reply — treat the button title as plain text
+  // interactive button/list reply — title goes in `text` (history/logging),
+  // id goes in `interactiveId` (what code should actually branch on)
   if (message.type === 'interactive') {
     const btnReply = message.interactive?.button_reply
     if (btnReply?.title) {
-      return { from, messageId, type: 'text', text: btnReply.title }
+      return { from, messageId, type: 'text', text: btnReply.title, interactiveId: btnReply.id }
     }
     const listReply = message.interactive?.list_reply
     if (listReply?.title) {
-      return { from, messageId, type: 'text', text: listReply.title }
+      return { from, messageId, type: 'text', text: listReply.title, interactiveId: listReply.id }
     }
   }
 
