@@ -310,14 +310,19 @@ export async function rescheduleAppointment(
   return { ok: true, appointment: appointmentFromRow(data) }
 }
 
-const REMINDER_WINDOW_START_MS = 23 * 3600_000
-const REMINDER_WINDOW_END_MS = 25 * 3600_000
+// Vercel Hobby cron only runs once daily (vercel.json), with up to ±59min
+// of its own timing jitter — a tight 23-25h window would miss most
+// appointments. 18-42h is wide enough that two consecutive ~24h-apart daily
+// runs always overlap (run N covers [+18h,+42h], run N+1 covers roughly
+// [+42h,+66h]), so every appointment gets caught by exactly one run — or
+// rarely two if a run's timing shifts, which just means an occasional
+// duplicate reminder rather than a missed one.
+const REMINDER_WINDOW_START_MS = 18 * 3600_000
+const REMINDER_WINDOW_END_MS = 42 * 3600_000
 
 /**
  * Sends a WhatsApp reminder for every confirmed appointment starting in the
- * next 23-25h that hasn't already had one sent, and marks each as sent.
- * The 2-hour window (vs. exactly 24h) gives a 15-minute cron cadence room
- * to catch every appointment without double-sending.
+ * window above that hasn't already had one sent, and marks each as sent.
  *
  * Deliberately marks reminder_sent AFTER a successful send, not before: if
  * the function is killed between the two steps, the worst case is a
@@ -347,7 +352,9 @@ export async function sendDueReminders(): Promise<number> {
   for (const row of data ?? []) {
     const appointment = appointmentFromRow(row)
     const lines = [
-      `Reminder: your ${appointment.serviceName} is tomorrow at ${formatAppointmentTime(appointment.startsAt)}.`,
+      // formatAppointmentTime already includes the weekday/date, so this
+      // stays accurate regardless of exact lead time within the window.
+      `Reminder: your ${appointment.serviceName} is coming up on ${formatAppointmentTime(appointment.startsAt)}.`,
     ]
     if (appointment.location) lines.push(`Location: ${appointment.location}`)
     lines.push('Message ZOE if you need to cancel or reschedule.')
