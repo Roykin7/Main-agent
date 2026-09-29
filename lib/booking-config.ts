@@ -34,7 +34,7 @@ export const BOOKING_CONFIG: Record<BookingDomain, DomainBookingConfig> = {
     label: 'Coffee farm-visit consultation',
     services: [{ name: 'Farm visit consultation', durationMinutes: 60 }],
     businessHours: { start: '08:00', end: '17:00', days: [1, 2, 3, 4, 5] }, // Mon–Fri
-    calEventTypeSlug: 'farm-visit-consultation', // placeholder — verify against your Cal.com event type
+    calEventTypeSlug: 'farm-visit-consultations', // matches cal.com/arthur-roykin/farm-visit-consultations
     reasonRequired: true,
     requiresLocation: true,
   },
@@ -42,7 +42,7 @@ export const BOOKING_CONFIG: Record<BookingDomain, DomainBookingConfig> = {
     label: 'Phaneroo pastoral appointment',
     services: [{ name: 'Pastoral counseling session', durationMinutes: 30 }],
     businessHours: { start: '14:00', end: '18:00', days: [2, 4] }, // Tue/Thu — placeholder
-    calEventTypeSlug: 'pastoral-counseling-session', // placeholder — verify against your Cal.com event type
+    calEventTypeSlug: 'pastor-counselling', // matches cal.com/arthur-roykin/pastor-counselling
     reasonRequired: false,
     requiresLocation: false,
   },
