@@ -220,8 +220,27 @@ export async function chat(
   const traceId = `${(phone ?? 'anon').slice(-4)}_${traceStart}`
   const traceTools: Array<{ name: string; round: number; durationMs: number; resultChars: number; timedOut: boolean }> = []
 
+  // LLMs are unreliable at date math and have no real sense of "today" —
+  // ground every conversation in the actual current date so relative
+  // expressions ("next Monday", "in two weeks") get resolved correctly
+  // instead of guessed. Caught via real-world testing: "next week Monday"
+  // was resolved to a Friday with nothing here to correct it.
+  const now = new Date()
+  const todayIso = now.toLocaleDateString('en-CA', { timeZone: 'Africa/Kampala' })
+  const todayLabel = now.toLocaleDateString('en-UG', {
+    weekday: 'long',
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    timeZone: 'Africa/Kampala',
+  })
+
   const messages: OpenAI.ChatCompletionMessageParam[] = [
     { role: 'system', content: ZOE_SYSTEM_PROMPT },
+    {
+      role: 'system',
+      content: `Today's date is ${todayLabel} (${todayIso}, Africa/Kampala). When the user says a relative date ("next Monday", "this Friday", "in two weeks", "next week"), work out the exact date from THIS date — never from your own sense of the current date, which is frequently wrong. Pass the resolved "YYYY-MM-DD" to any tool that takes a date.`,
+    },
   ]
 
   if (userProfile && userProfile.length > 0) {
