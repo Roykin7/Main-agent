@@ -12,14 +12,12 @@ export type BookingService = {
 export type DomainBookingConfig = {
   label: string
   services: BookingService[]
-  businessHours: {
-    start: string // "HH:MM", 24-hour, Africa/Kampala
-    end: string   // "HH:MM", 24-hour, Africa/Kampala
-    days: number[] // 0=Sunday .. 6=Saturday
-  }
   // Cal.com Event Type slug this domain books against (from the event type's
-  // URL, e.g. cal.com/<CAL_USERNAME>/<slug>). Its configured duration in Cal.com
-  // must match durationMinutes below — ZOE's own availability math assumes it does.
+  // URL, e.g. cal.com/<CAL_USERNAME>/<slug>). Availability (hours, days) is
+  // read live from this event type's own Cal.com schedule via getCalSlots —
+  // there's deliberately no local businessHours config to drift out of sync
+  // with it. Its configured duration in Cal.com must match durationMinutes
+  // below — the local `appointments` row/exclusion-constraint still needs it.
   calEventTypeSlug: string
   // Whether set_booking_details must collect these before showing the
   // confirm card. Coffee needs both (an agronomist can't prepare or find
@@ -33,7 +31,6 @@ export const BOOKING_CONFIG: Record<BookingDomain, DomainBookingConfig> = {
   coffee: {
     label: 'Coffee farm-visit consultation',
     services: [{ name: 'Farm visit consultation', durationMinutes: 60 }],
-    businessHours: { start: '08:00', end: '17:00', days: [1, 2, 3, 4, 5] }, // Mon–Fri
     calEventTypeSlug: 'farm-visit-consultations', // matches cal.com/arthur-roykin/farm-visit-consultations
     reasonRequired: true,
     requiresLocation: true,
@@ -41,7 +38,6 @@ export const BOOKING_CONFIG: Record<BookingDomain, DomainBookingConfig> = {
   phaneroo: {
     label: 'Phaneroo pastoral appointment',
     services: [{ name: 'Pastoral counseling session', durationMinutes: 30 }],
-    businessHours: { start: '14:00', end: '18:00', days: [2, 4] }, // Tue/Thu — placeholder
     calEventTypeSlug: 'pastor-counselling', // matches cal.com/arthur-roykin/pastor-counselling
     reasonRequired: false,
     requiresLocation: false,

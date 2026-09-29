@@ -79,10 +79,13 @@ export async function sendLongText(to: string, text: string): Promise<void> {
 }
 
 /**
- * Sends an image by public URL, with an optional caption.
- * Retries once on transient failure (429, 5xx) — same policy as sendText.
+ * Shared POST-to-/messages-with-one-retry used by sendImage, sendSlotList,
+ * sendConfirmButtons, and sendDocument — they differ only in payload shape.
+ * (sendText/sendTextWithRetry wrap a different function with a different
+ * retry cadence — a separate, older idiom, left as-is rather than unified
+ * here to keep this change scoped.)
  */
-export async function sendImage(to: string, imageUrl: string, caption?: string): Promise<void> {
+async function postMessageWithRetry(payload: object, fnName: string): Promise<void> {
   const url = apiUrl(`${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`)
   const delays = [1500]
 
@@ -93,21 +96,32 @@ export async function sendImage(to: string, imageUrl: string, caption?: string):
         Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to,
-        type: 'image',
-        image: caption ? { link: imageUrl, caption } : { link: imageUrl },
-      }),
+      body: JSON.stringify(payload),
     })
 
     if (res.ok) return
     if (attempt === delays.length) {
       const errorBody = await res.text()
-      throw new Error(`WhatsApp sendImage failed (${res.status}): ${errorBody}`)
+      throw new Error(`WhatsApp ${fnName} failed (${res.status}): ${errorBody}`)
     }
     await new Promise((r) => setTimeout(r, delays[attempt]))
   }
+}
+
+/**
+ * Sends an image by public URL, with an optional caption.
+ * Retries once on transient failure (429, 5xx) — same policy as sendText.
+ */
+export async function sendImage(to: string, imageUrl: string, caption?: string): Promise<void> {
+  await postMessageWithRetry(
+    {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'image',
+      image: caption ? { link: imageUrl, caption } : { link: imageUrl },
+    },
+    'sendImage'
+  )
 }
 
 export type InteractiveListRow = { id: string; title: string; description?: string }
@@ -123,38 +137,22 @@ export async function sendSlotList(
   bodyText: string,
   rows: InteractiveListRow[]
 ): Promise<void> {
-  const url = apiUrl(`${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`)
-  const delays = [1500]
-
-  for (let attempt = 0; attempt <= delays.length; attempt++) {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to,
-        type: 'interactive',
-        interactive: {
-          type: 'list',
-          body: { text: bodyText },
-          action: {
-            button: 'Pick a time',
-            sections: [{ title: 'Available slots', rows: rows.slice(0, 10) }],
-          },
+  await postMessageWithRetry(
+    {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'list',
+        body: { text: bodyText },
+        action: {
+          button: 'Pick a time',
+          sections: [{ title: 'Available slots', rows: rows.slice(0, 10) }],
         },
-      }),
-    })
-
-    if (res.ok) return
-    if (attempt === delays.length) {
-      const errorBody = await res.text()
-      throw new Error(`WhatsApp sendSlotList failed (${res.status}): ${errorBody}`)
-    }
-    await new Promise((r) => setTimeout(r, delays[attempt]))
-  }
+      },
+    },
+    'sendSlotList'
+  )
 }
 
 /**
@@ -167,37 +165,21 @@ export async function sendConfirmButtons(
   bodyText: string,
   buttons: { id: string; title: string }[]
 ): Promise<void> {
-  const url = apiUrl(`${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`)
-  const delays = [1500]
-
-  for (let attempt = 0; attempt <= delays.length; attempt++) {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to,
-        type: 'interactive',
-        interactive: {
-          type: 'button',
-          body: { text: bodyText },
-          action: {
-            buttons: buttons.slice(0, 3).map((b) => ({ type: 'reply', reply: { id: b.id, title: b.title } })),
-          },
+  await postMessageWithRetry(
+    {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'button',
+        body: { text: bodyText },
+        action: {
+          buttons: buttons.slice(0, 3).map((b) => ({ type: 'reply', reply: { id: b.id, title: b.title } })),
         },
-      }),
-    })
-
-    if (res.ok) return
-    if (attempt === delays.length) {
-      const errorBody = await res.text()
-      throw new Error(`WhatsApp sendConfirmButtons failed (${res.status}): ${errorBody}`)
-    }
-    await new Promise((r) => setTimeout(r, delays[attempt]))
-  }
+      },
+    },
+    'sendConfirmButtons'
+  )
 }
 
 /**
@@ -247,31 +229,15 @@ export async function sendDocument(
   filename: string,
   caption?: string
 ): Promise<void> {
-  const url = apiUrl(`${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`)
-  const delays = [1500]
-
-  for (let attempt = 0; attempt <= delays.length; attempt++) {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        messaging_product: 'whatsapp',
-        to,
-        type: 'document',
-        document: caption ? { id: mediaId, filename, caption } : { id: mediaId, filename },
-      }),
-    })
-
-    if (res.ok) return
-    if (attempt === delays.length) {
-      const errorBody = await res.text()
-      throw new Error(`WhatsApp sendDocument failed (${res.status}): ${errorBody}`)
-    }
-    await new Promise((r) => setTimeout(r, delays[attempt]))
-  }
+  await postMessageWithRetry(
+    {
+      messaging_product: 'whatsapp',
+      to,
+      type: 'document',
+      document: caption ? { id: mediaId, filename, caption } : { id: mediaId, filename },
+    },
+    'sendDocument'
+  )
 }
 
 /**
@@ -332,8 +298,8 @@ export type IncomingMessage = {
   type: MessageType
   mediaId?: string
   // Machine-readable id from a tapped interactive list row or button
-  // (e.g. "slot:coffee:Farm visit consultation:2026-09-30T10:00:00.000Z" or
-  // "confirm_booking"). `text` still holds the human-readable title for
+  // (e.g. "slot:book|coffee|Farm visit consultation|2026-09-30T10:00:00.000Z"
+  // or "confirm_booking"). `text` still holds the human-readable title for
   // history/logging — this carries the value code should actually branch on.
   interactiveId?: string
 }

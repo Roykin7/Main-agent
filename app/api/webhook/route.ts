@@ -66,9 +66,30 @@ type InteractiveOutcome =
  */
 async function handleInteractive(interactiveId: string, from: string): Promise<InteractiveOutcome> {
   if (interactiveId.startsWith('slot:')) {
-    const parts = interactiveId.slice('slot:'.length).split('|')
+    // "book|domain|service|iso" or "reschedule:<appointmentId>|domain|service|iso"
+    // — the kind/target is set deterministically by whichever tool generated
+    // this picker (check_availability), never inferred from ambient draft
+    // state. This is what stops a stale reschedule draft from silently
+    // hijacking an unrelated fresh booking (or vice versa).
+    const rest = interactiveId.slice('slot:'.length)
+    const firstPipe = rest.indexOf('|')
+    if (firstPipe === -1) return { kind: 'passthrough' }
+    const kindPart = rest.slice(0, firstPipe)
+    const parts = rest.slice(firstPipe + 1).split('|')
     if (parts.length !== 3) return { kind: 'passthrough' }
     const [domain, serviceName, iso] = parts as [BookingDomain, string, string]
+
+    let kind: 'book' | 'reschedule'
+    let targetAppointmentId: number | null = null
+    if (kindPart === 'book') {
+      kind = 'book'
+    } else if (kindPart.startsWith('reschedule:')) {
+      kind = 'reschedule'
+      targetAppointmentId = Number(kindPart.slice('reschedule:'.length))
+      if (!Number.isFinite(targetAppointmentId)) return { kind: 'passthrough' }
+    } else {
+      return { kind: 'passthrough' }
+    }
 
     const startsAt = new Date(iso)
     const config = BOOKING_CONFIG[domain]
@@ -77,19 +98,23 @@ async function handleInteractive(interactiveId: string, from: string): Promise<I
 
     const endsAt = new Date(startsAt.getTime() + service.durationMinutes * 60_000)
 
-    // Preserve any already-collected fields (mid-reschedule, or re-picking a slot)
+    // Only carry forward name/reason/location when the existing draft is
+    // for the SAME kind/target — this tap's own kind always wins otherwise.
     const existing = await getPendingBooking(from)
+    const sameDraft =
+      existing?.kind === kind && (kind === 'book' || existing?.targetAppointmentId === targetAppointmentId)
+
     await upsertPendingBooking({
       phone: from,
-      kind: existing?.kind ?? 'book',
-      targetAppointmentId: existing?.targetAppointmentId ?? null,
+      kind,
+      targetAppointmentId,
       domain,
       serviceName,
       startsAt,
       endsAt,
-      attendeeName: existing?.attendeeName ?? null,
-      reason: existing?.reason ?? null,
-      location: existing?.location ?? null,
+      attendeeName: sameDraft ? existing!.attendeeName : null,
+      reason: sameDraft ? existing!.reason : null,
+      location: sameDraft ? existing!.location : null,
     })
 
     return {

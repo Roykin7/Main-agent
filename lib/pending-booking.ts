@@ -101,6 +101,12 @@ export async function patchPendingBooking(
   if (fields.location !== undefined) patch.location = fields.location
   if (Object.keys(patch).length === 0) return
 
+  // Refresh the TTL on every turn — without this, a slow multi-turn
+  // detail-collection conversation (name, then reason, then location, each
+  // its own WhatsApp round-trip) can silently expire and discard everything
+  // already provided, since the TTL was otherwise only ever set once.
+  patch.expires_at = new Date(Date.now() + 15 * 60_000).toISOString()
+
   const { error } = await getSupabase().from('pending_bookings').update(patch).eq('phone', phone)
   if (error) console.error('patchPendingBooking error:', error)
 }

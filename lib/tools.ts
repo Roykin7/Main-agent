@@ -11,7 +11,6 @@ import {
   getAvailableSlots,
   findUpcomingAppointments,
   getAppointmentById,
-  combineKampalaDateTime,
   formatAppointmentTime,
 } from './booking'
 import {
@@ -411,15 +410,13 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
     function: {
       name: 'reschedule_appointment',
       description:
-        "Starts rescheduling one of the user's upcoming appointments to a new date/time. Look up which appointment first via cancel_appointment's lookup behavior if the id isn't already known from context. Sends a Confirm/Change card recapping old time → new time — do not tell the user it's rescheduled yourself, only the card (and their tap) does that.",
+        "Starts rescheduling one of the user's upcoming appointments. Look up which appointment first via cancel_appointment's lookup behavior if the id isn't already known from context. After calling this, call check_availability next for the date the user wants — it sends a real slot picker for the reschedule (do not ask the user for a raw date/time yourself). Tapping a slot there sends its own Confirm/Change card — do not tell the user it's rescheduled yourself, only that card (and their tap) does that.",
       parameters: {
         type: 'object',
         properties: {
           appointment_id: { type: 'number', description: 'The appointment to reschedule' },
-          date: { type: 'string', description: 'New date — "YYYY-MM-DD", "today", or "tomorrow"' },
-          time: { type: 'string', description: 'New time, 24-hour "HH:MM"' },
         },
-        required: ['appointment_id', 'date', 'time'],
+        required: ['appointment_id'],
       },
     },
   },
@@ -916,7 +913,11 @@ export async function executeToolCall(
       }
 
       console.log(`Escalation logged: ${reason} [${phone}] notified=${notified}`)
-      return 'Escalated: logged and a person has been notified. Reassure the user that someone will follow up with them, after giving your own best answer first.'
+
+      if (notified) {
+        return 'Escalated: logged and a person has been notified. Reassure the user that someone will follow up with them, after giving your own best answer first.'
+      }
+      return "Escalated: logged, but the notification email failed to send — do NOT tell the user a person has been notified. Apologize, give the direct hand-off info yourself (extension officer / chapter pastor), and suggest they try again shortly."
     }
 
     case 'check_availability': {
@@ -934,9 +935,25 @@ export async function executeToolCall(
         return `Unknown service "${serviceName}" for ${domain}. Valid services: ${names}.`
       }
 
+      // If there's an in-progress reschedule for this exact appointment/
+      // service, this call is "pick a new time for it" — tag the generated
+      // slot ids accordingly (see handleInteractive's slot: branch) so a
+      // tap can never be misattributed to the wrong booking/reschedule, and
+      // exclude the appointment's own current slot from counting as busy
+      // against itself.
+      const pending = await getPendingBooking(phone)
+      const isReschedulePick =
+        pending?.kind === 'reschedule' && pending.domain === domain && pending.serviceName === serviceName
+
+      let excludeBookingUid: string | undefined
+      if (isReschedulePick && pending!.targetAppointmentId) {
+        const target = await getAppointmentById(pending!.targetAppointmentId, phone)
+        excludeBookingUid = target?.calendarEventId ?? undefined
+      }
+
       let slots, dateUsed
       try {
-        ;({ slots, dateUsed } = await getAvailableSlots(domain, serviceName, dateStr))
+        ;({ slots, dateUsed } = await getAvailableSlots(domain, serviceName, dateStr, { excludeBookingUid }))
       } catch (err) {
         console.error('check_availability error:', err)
         return 'Could not check availability right now — try again in a moment.'
@@ -947,9 +964,12 @@ export async function executeToolCall(
       }
 
       // "|" as the field separator, not ":" — startsAt is an ISO timestamp
-      // and would collide with a ":"-delimited split.
+      // and would collide with a ":"-delimited split. The id's first segment
+      // (before the first "|") is "book" or "reschedule:<appointmentId>" —
+      // set here, deterministically, by whichever tool generated the picker.
+      const idPrefix = isReschedulePick ? `reschedule:${pending!.targetAppointmentId}` : 'book'
       const rows = slots.map((s) => ({
-        id: `slot:${domain}|${serviceName}|${s.startsAt.toISOString()}`,
+        id: `slot:${idPrefix}|${domain}|${serviceName}|${s.startsAt.toISOString()}`,
         title: s.label,
       }))
 
@@ -1030,51 +1050,29 @@ export async function executeToolCall(
       if (!phone) return 'Cannot manage appointments outside of a WhatsApp conversation.'
 
       const appointmentId = args.appointment_id as number
-      const dateStr = resolveDate(args.date as string)
-      const time = (args.time as string)?.trim()
-
-      if (!appointmentId || !time) return 'Missing appointment_id or time.'
+      if (!appointmentId) return 'Missing appointment_id — look it up first if not already known.'
 
       const existing = await getAppointmentById(appointmentId, phone)
       if (!existing) return 'That appointment was not found for this number.'
 
-      const service = BOOKING_CONFIG[existing.domain].services.find((s) => s.name === existing.serviceName)
-      if (!service) return 'Internal config error — that service no longer exists for this domain.'
-
-      const newStartsAt = combineKampalaDateTime(dateStr, time)
-      const newEndsAt = new Date(newStartsAt.getTime() + service.durationMinutes * 60_000)
-
+      // Stages the reschedule with its OWN current time as a placeholder —
+      // check_availability's slot: tap will overwrite starts_at/ends_at with
+      // the real new time once the user picks one. Carries forward name/
+      // reason/location so nothing needs re-asking.
       await upsertPendingBooking({
         phone,
         kind: 'reschedule',
         targetAppointmentId: appointmentId,
         domain: existing.domain,
         serviceName: existing.serviceName,
-        startsAt: newStartsAt,
-        endsAt: newEndsAt,
+        startsAt: new Date(existing.startsAt),
+        endsAt: new Date(existing.endsAt),
         attendeeName: existing.attendeeName,
         reason: existing.reason,
         location: existing.location,
       })
 
-      const recapLines = [
-        'Confirm this reschedule?',
-        existing.serviceName,
-        `From: ${formatAppointmentTime(existing.startsAt)}`,
-        `To: ${formatAppointmentTime(newStartsAt.toISOString())}`,
-      ]
-
-      try {
-        await sendConfirmButtons(phone, recapLines.join('\n'), [
-          { id: 'confirm_booking', title: 'Confirm' },
-          { id: 'change_booking', title: 'Change' },
-        ])
-      } catch (err) {
-        console.error('reschedule_appointment sendConfirmButtons error:', err)
-        return 'Could not send the confirmation card — tell the user to try again shortly.'
-      }
-
-      return 'Sent a Confirm/Change card recapping the reschedule. Do NOT say it is rescheduled yourself; only the user tapping Confirm does that.'
+      return `Found appointment #${existing.id} — ${existing.serviceName} on ${formatAppointmentTime(existing.startsAt)}. Now call check_availability for the new date the user wants — it will offer real slots for this reschedule (this appointment's own current time won't count as busy against itself). Do NOT ask for date/time yourself first; let check_availability's picker handle it.`
     }
 
     case 'cancel_appointment': {
