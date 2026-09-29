@@ -39,12 +39,70 @@ function ugandaDate(offsetDays = 0): string {
   return new Date(ms).toISOString().split('T')[0]
 }
 
+// 0=Sunday..6=Saturday, in Africa/Kampala terms — matches ugandaDate's own offset.
+function currentUgandaWeekday(): number {
+  const ms = Date.now() + 3 * 3600_000
+  return new Date(ms).getUTCDay()
+}
+
+const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+
+/**
+ * Resolves common relative-date phrases deterministically in code instead
+ * of trusting the model's own date arithmetic — confirmed via real-world
+ * testing that even a grounded, correct "today's date" isn't enough for the
+ * model to reliably compute something like "next week Sunday" (it resolved
+ * to a Thursday). Anything not matched here falls through assuming the
+ * caller already gives "YYYY-MM-DD".
+ */
 function resolveDate(dateStr: string): string {
   const d = dateStr.toLowerCase().trim()
   if (d === 'today') return ugandaDate(0)
   if (d === 'yesterday') return ugandaDate(-1)
   if (d === 'tomorrow') return ugandaDate(1)
-  return dateStr // assume YYYY-MM-DD
+
+  const todayWeekday = currentUgandaWeekday()
+
+  // "next week <weekday>" — the target weekday within next week's Mon-Sun block
+  const nextWeekMatch = d.match(/^next week (\w+)$/)
+  if (nextWeekMatch) {
+    const target = WEEKDAYS.indexOf(nextWeekMatch[1])
+    if (target !== -1) {
+      const daysUntilNextMonday = ((1 - todayWeekday + 7) % 7) || 7
+      const fromMondayToTarget = (target - 1 + 7) % 7
+      return ugandaDate(daysUntilNextMonday + fromMondayToTarget)
+    }
+  }
+
+  // "next <weekday>" — skip the immediate upcoming occurrence, use the one a week later
+  const nextMatch = d.match(/^next (\w+)$/)
+  if (nextMatch) {
+    const target = WEEKDAYS.indexOf(nextMatch[1])
+    if (target !== -1) {
+      const daysUntil = ((target - todayWeekday + 7) % 7) || 7
+      return ugandaDate(daysUntil + 7)
+    }
+  }
+
+  // "this <weekday>" — the nearest upcoming occurrence (today counts)
+  const thisMatch = d.match(/^this (\w+)$/)
+  if (thisMatch) {
+    const target = WEEKDAYS.indexOf(thisMatch[1])
+    if (target !== -1) return ugandaDate((target - todayWeekday + 7) % 7)
+  }
+
+  // bare "<weekday>" — nearest upcoming occurrence, not today
+  const bareIndex = WEEKDAYS.indexOf(d)
+  if (bareIndex !== -1) {
+    return ugandaDate(((bareIndex - todayWeekday + 7) % 7) || 7)
+  }
+
+  if (d === 'next week') return ugandaDate(7)
+
+  const inDaysMatch = d.match(/^in (\d+) days?$/)
+  if (inDaysMatch) return ugandaDate(Number(inDaysMatch[1]))
+
+  return dateStr // assume already "YYYY-MM-DD"
 }
 
 export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
@@ -374,7 +432,8 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
           },
           date: {
             type: 'string',
-            description: 'Date to check — "YYYY-MM-DD", "today", or "tomorrow"',
+            description:
+              'The day the user asked for, in their own words where possible — "today", "tomorrow", "sunday", "next monday", "this friday", "next week sunday", "in 3 days", or an exact "YYYY-MM-DD". Do NOT compute the calendar date yourself for relative phrases like "next week X" — pass the phrase through as-is; it is resolved deterministically in code, which is more reliable than your own date arithmetic.',
           },
         },
         required: ['domain', 'service_name', 'date'],
