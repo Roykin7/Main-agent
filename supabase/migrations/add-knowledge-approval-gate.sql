@@ -37,6 +37,7 @@ returns table (
   similarity float
 )
 language sql stable
+set search_path = public
 as $$
   with
   vector_results as (
@@ -102,6 +103,7 @@ returns table (
   similarity          float
 )
 language sql stable
+set search_path = public
 as $$
   select
     id,
@@ -120,13 +122,15 @@ $$;
 
 -- ── Review queue: everything currently awaiting a human decision ──────────
 
-create or replace view pending_knowledge_chunks as
+create or replace view pending_knowledge_chunks
+  with (security_invoker = on) as
   select id, topic, title, content, source, created_at
   from knowledge_chunks
   where not approved
   order by created_at asc;
 
-create or replace view pending_diagnosis_cases as
+create or replace view pending_diagnosis_cases
+  with (security_invoker = on) as
   select id, symptom_description, affected_part, diagnosis, treatment, crop_type, region, created_at
   from diagnosis_cases
   where not approved

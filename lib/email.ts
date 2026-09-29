@@ -78,3 +78,71 @@ Please add them to your new converts system.
   console.log(`New convert email sent: ${data.firstName} ${data.lastName} [${data.phone}]`)
   return true
 }
+
+export type EscalationEmailData = {
+  phone: string
+  reason: 'pastoral_crisis' | 'coffee_emergency' | 'human_handoff_request'
+  summary: string
+}
+
+const ESCALATION_REASON_LABELS: Record<EscalationEmailData['reason'], string> = {
+  pastoral_crisis: 'Pastoral crisis (grief, safety, or urgent spiritual need)',
+  coffee_emergency: 'Urgent coffee/agronomy issue',
+  human_handoff_request: 'User asked to speak with a person',
+}
+
+export async function sendEscalationEmail(data: EscalationEmailData): Promise<boolean> {
+  const apiKey = process.env.RESEND_API_KEY
+  if (!apiKey) {
+    console.error('sendEscalationEmail: RESEND_API_KEY not set')
+    return false
+  }
+
+  const from = process.env.RESEND_FROM
+  if (!from) {
+    console.error('sendEscalationEmail: RESEND_FROM not set — email not sent.')
+    return false
+  }
+
+  const to = process.env.ESCALATION_EMAIL
+  if (!to) {
+    console.error('sendEscalationEmail: ESCALATION_EMAIL not set — email not sent.')
+    return false
+  }
+
+  const resend = new Resend(apiKey)
+  const timestamp = new Date().toLocaleString('en-UG', {
+    dateStyle: 'full',
+    timeStyle: 'short',
+    timeZone: 'Africa/Kampala',
+  })
+
+  const body = `
+A conversation with ZOE (WhatsApp Assistant) was escalated to a human.
+
+─────────────────────────────────
+Reason:   ${ESCALATION_REASON_LABELS[data.reason]}
+Phone:    ${data.phone}
+Time:     ${timestamp}
+─────────────────────────────────
+
+${data.summary}
+
+The user has already been told someone will follow up with them.
+`.trim()
+
+  const { error } = await resend.emails.send({
+    from,
+    to,
+    subject: `ZOE Escalation — ${ESCALATION_REASON_LABELS[data.reason]} — ${data.phone}`,
+    text: body,
+  })
+
+  if (error) {
+    console.error('sendEscalationEmail error:', error)
+    return false
+  }
+
+  console.log(`Escalation email sent: ${data.reason} [${data.phone}]`)
+  return true
+}

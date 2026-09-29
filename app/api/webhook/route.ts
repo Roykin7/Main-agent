@@ -17,6 +17,7 @@ import {
 import { loadUserProfile } from '@/lib/user-profile'
 import { withTimeout } from '@/lib/timeout'
 import { checkRateLimit } from '@/lib/rate-limit'
+import { acquirePhoneLock, releasePhoneLock } from '@/lib/phone-lock'
 
 // Hard ceiling for this function on Vercel. Keep the internal timeouts below
 // comfortably under this so there's always time left to send a reply before
@@ -38,6 +39,7 @@ const UNSUPPORTED_REPLIES: Record<string, string> = {
 
 const FALLBACK_REPLY = "Sorry, something went wrong on my end — please try again in a moment."
 const AUDIO_FALLBACK  = "I couldn't make out that voice note — could you type your question? I'm right here!"
+const STILL_PROCESSING_REPLY = "Still replying to your last message — give me a moment."
 const RATE_LIMIT_REPLIES = {
   burst: "You're sending messages a bit fast for me to keep up — give me a minute and try again.",
   daily: "You've reached today's message limit with me — please try again tomorrow. For anything urgent, reach out to your local extension officer.",
@@ -91,6 +93,15 @@ export async function POST(req: NextRequest) {
   if (rateLimit.limited) {
     console.log(`Rate limited (${rateLimit.reason}):`, from)
     await sendLongText(from, RATE_LIMIT_REPLIES[rateLimit.reason]).catch(() => {})
+    return NextResponse.json({ ok: true })
+  }
+
+  // Per-phone mutex: stops two near-simultaneous deliveries for the same
+  // number (e.g. a user re-sending before ZOE has replied) from racing two
+  // concurrent invocations through the same conversation history.
+  if (!(await acquirePhoneLock(from))) {
+    console.log('Phone locked, still processing a prior message:', from)
+    await sendLongText(from, STILL_PROCESSING_REPLY).catch(() => {})
     return NextResponse.json({ ok: true })
   }
 
@@ -163,6 +174,8 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     console.error('ZOE error:', err)
     sendLongText(from, FALLBACK_REPLY).catch(() => {})
+  } finally {
+    await releasePhoneLock(from)
   }
 
   return NextResponse.json({ ok: true })

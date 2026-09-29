@@ -4,8 +4,17 @@ import { detectScriptureRequest, getVerse, type BibleTranslation } from './bible
 import { embed } from './embeddings'
 import { getSupabase } from './supabase'
 import { saveUserFact } from './user-profile'
-import { sendNewConvertEmail, type NewConvertData } from './email'
+import { sendNewConvertEmail, sendEscalationEmail, type NewConvertData } from './email'
 import { sendImage } from './whatsapp'
+import { BOOKING_CONFIG, type BookingDomain } from './booking-config'
+import {
+  getAvailableSlots,
+  bookAppointment,
+  findUpcomingAppointments,
+  cancelAppointmentById,
+  combineKampalaDateTime,
+  formatAppointmentTime,
+} from './booking'
 
 function degreesToCompass(deg: number): string {
   const dirs = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW']
@@ -314,6 +323,98 @@ export const ZOE_TOOLS: OpenAI.ChatCompletionTool[] = [
           },
         },
         required: ['topic', 'title', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'escalate_to_human',
+      description:
+        "Flag this conversation for a real person to follow up — logs it durably and sends a notification email. Use for explicit requests to speak with a person, pastoral crises (grief, safety, self-harm, abuse — not just a hard question or sadness), or high-stakes/uncertain coffee emergencies (fast-spreading disease outbreak, suspected quarantine pest). Do NOT use for routine hand-offs like 'check with your cooperative' or 'see phaneroo.com for event times' — for those, just say so in your reply, no tool call needed. Always give your own best answer in the same reply; this complements your help, it doesn't replace it.",
+      parameters: {
+        type: 'object',
+        properties: {
+          reason: {
+            type: 'string',
+            enum: ['pastoral_crisis', 'coffee_emergency', 'human_handoff_request'],
+            description: 'Why this needs a human',
+          },
+          summary: {
+            type: 'string',
+            description:
+              'A short, third-person description of what is happening and why it needs a person — not a raw copy of the user message.',
+          },
+        },
+        required: ['reason', 'summary'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'check_availability',
+      description:
+        'Get open appointment slots for a service on a given date. ALWAYS call this before proposing a date/time to the user — never invent availability.',
+      parameters: {
+        type: 'object',
+        properties: {
+          domain: {
+            type: 'string',
+            enum: ['coffee', 'phaneroo'],
+            description: 'Which kind of appointment',
+          },
+          service_name: {
+            type: 'string',
+            description: 'Exact service name from that domain\'s service list',
+          },
+          date: {
+            type: 'string',
+            description: 'Date to check — "YYYY-MM-DD", "today", or "tomorrow"',
+          },
+        },
+        required: ['domain', 'service_name', 'date'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'book_appointment',
+      description:
+        'Books a confirmed appointment. Only call after check_availability confirmed the slot is open AND the user has explicitly confirmed the date/time. Saves the booking, adds it to the calendar, and sends the user a PDF confirmation on WhatsApp.',
+      parameters: {
+        type: 'object',
+        properties: {
+          domain: { type: 'string', enum: ['coffee', 'phaneroo'] },
+          service_name: {
+            type: 'string',
+            description: 'Exact service name from that domain\'s service list',
+          },
+          date: { type: 'string', description: '"YYYY-MM-DD", "today", or "tomorrow"' },
+          time: { type: 'string', description: '24-hour "HH:MM", e.g. "14:30"' },
+          attendee_name: { type: 'string', description: "The person's full name" },
+        },
+        required: ['domain', 'service_name', 'date', 'time', 'attendee_name'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'cancel_appointment',
+      description:
+        "Cancels one of the user's upcoming appointments. Call with no appointment_id first to look up what they have — if there's more than one, ask which before cancelling. Never ask for their name or phone number — the system looks them up automatically from the conversation.",
+      parameters: {
+        type: 'object',
+        properties: {
+          appointment_id: {
+            type: 'number',
+            description:
+              'The specific appointment id to cancel, once known. Omit on the first call to just look up existing appointments.',
+          },
+        },
+        required: [],
       },
     },
   },
@@ -764,6 +865,134 @@ export async function executeToolCall(
 
       console.log(`Learned (pending review): [${topic}] "${title}"`)
       return `Stored "${title}" under ${topic} knowledge — queued for review before it's used to answer other users. Do not tell the user this is now confirmed, published knowledge.`
+    }
+
+    case 'escalate_to_human': {
+      const reason = args.reason as 'pastoral_crisis' | 'coffee_emergency' | 'human_handoff_request'
+      const summary = (args.summary as string)?.trim()
+      const phone = context?.phone ?? 'unknown'
+
+      if (!reason || !summary) return 'Missing reason or summary — cannot escalate.'
+
+      const { data: insertData, error: dbError } = await getSupabase()
+        .from('escalations')
+        .insert({ phone, reason, summary, notified: false })
+        .select('id')
+        .single()
+
+      if (dbError) {
+        console.error('escalate_to_human db error:', dbError)
+        return "Could not log the escalation due to a system error — apologize, give the direct hand-off info yourself (extension officer / chapter pastor), and suggest the user try again shortly. Do not claim a person has been notified."
+      }
+
+      const notified = await sendEscalationEmail({ phone, reason, summary })
+
+      if (notified && insertData?.id) {
+        await getSupabase().from('escalations').update({ notified: true }).eq('id', insertData.id)
+      }
+
+      console.log(`Escalation logged: ${reason} [${phone}] notified=${notified}`)
+      return 'Escalated: logged and a person has been notified. Reassure the user that someone will follow up with them, after giving your own best answer first.'
+    }
+
+    case 'check_availability': {
+      const domain = args.domain as BookingDomain
+      const serviceName = (args.service_name as string)?.trim()
+      const dateStr = resolveDate(args.date as string)
+
+      if (!domain || !BOOKING_CONFIG[domain]) return 'Invalid domain — must be "coffee" or "phaneroo".'
+
+      const service = BOOKING_CONFIG[domain].services.find((s) => s.name === serviceName)
+      if (!service) {
+        const names = BOOKING_CONFIG[domain].services.map((s) => s.name).join(', ')
+        return `Unknown service "${serviceName}" for ${domain}. Valid services: ${names}.`
+      }
+
+      let slots
+      try {
+        slots = await getAvailableSlots(domain, serviceName, dateStr)
+      } catch (err) {
+        console.error('check_availability error:', err)
+        return 'Could not check availability right now — try again in a moment.'
+      }
+
+      if (slots.length === 0) {
+        return `No open slots for ${serviceName} on ${dateStr}. Suggest the user try a different date.`
+      }
+      return `Available slots for ${serviceName} on ${dateStr}:\n` + slots.map((s) => `- ${s.label}`).join('\n')
+    }
+
+    case 'book_appointment': {
+      const domain = args.domain as BookingDomain
+      const serviceName = (args.service_name as string)?.trim()
+      const dateStr = resolveDate(args.date as string)
+      const time = (args.time as string)?.trim()
+      const attendeeName = (args.attendee_name as string)?.trim()
+      const phone = context?.phone
+
+      if (!phone) return 'Cannot book outside of a WhatsApp conversation.'
+      if (!domain || !BOOKING_CONFIG[domain]) return 'Invalid domain — must be "coffee" or "phaneroo".'
+      if (!serviceName || !time || !attendeeName) {
+        return 'Missing service, time, or attendee name — collect all of these before calling book_appointment.'
+      }
+
+      const startsAt = combineKampalaDateTime(dateStr, time)
+      const result = await bookAppointment({ domain, serviceName, startsAt, phone, attendeeName })
+
+      if (!result.ok) {
+        if (result.reason === 'slot_taken') {
+          return 'That slot was just taken by someone else — call check_availability again and offer the user different options.'
+        }
+        if (result.reason === 'invalid') {
+          const names = BOOKING_CONFIG[domain].services.map((s) => s.name).join(', ')
+          return `Invalid service name for ${domain}. Valid services: ${names}.`
+        }
+        return 'Could not save the booking due to a system error — apologize and ask the user to try again shortly.'
+      }
+
+      const parts = [`Booked: ${serviceName} for ${attendeeName} on ${dateStr} at ${time}.`]
+      parts.push(
+        result.pdfDelivered
+          ? 'A PDF confirmation was sent on WhatsApp — tell the user to check for it.'
+          : '(Internal note, do not mention to the user unless they ask: the PDF confirmation could not be delivered — booking is still confirmed.)'
+      )
+      if (!result.calendarSynced) {
+        parts.push('(Internal note, do not mention to the user: calendar sync failed — booking is still confirmed in our system.)')
+      }
+      return parts.join(' ')
+    }
+
+    case 'cancel_appointment': {
+      const phone = context?.phone
+      if (!phone) return 'Cannot manage appointments outside of a WhatsApp conversation.'
+
+      const appointmentId = args.appointment_id as number | undefined
+
+      if (!appointmentId) {
+        let upcoming
+        try {
+          upcoming = await findUpcomingAppointments(phone)
+        } catch (err) {
+          console.error('cancel_appointment lookup error:', err)
+          return 'Could not look up appointments right now — try again in a moment.'
+        }
+        if (upcoming.length === 0) return 'No upcoming appointments found for this number.'
+        if (upcoming.length === 1) {
+          const a = upcoming[0]
+          return `One upcoming appointment: #${a.id} — ${a.serviceName} on ${formatAppointmentTime(a.startsAt)}. Confirm with the user before cancelling, then call cancel_appointment again with this appointment_id.`
+        }
+        return (
+          'Multiple upcoming appointments:\n' +
+          upcoming.map((a) => `#${a.id} — ${a.serviceName} on ${formatAppointmentTime(a.startsAt)}`).join('\n') +
+          '\nAsk the user which one to cancel, then call cancel_appointment again with that appointment_id.'
+        )
+      }
+
+      const result = await cancelAppointmentById(appointmentId, phone)
+      if (!result.ok) {
+        return 'Could not cancel — that appointment was not found for this number, or was already cancelled.'
+      }
+      return 'Cancelled successfully.'
     }
 
     default:

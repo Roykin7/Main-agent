@@ -111,6 +111,80 @@ export async function sendImage(to: string, imageUrl: string, caption?: string):
 }
 
 /**
+ * Uploads a binary file (e.g. a generated PDF) to WhatsApp's media store and
+ * returns its media id. Uploading first (instead of hosting the file at a
+ * public URL) means the PDF never needs a storage bucket — the id is only
+ * valid for a limited time, so it must be used in a sendDocument call soon
+ * after uploading.
+ */
+export async function uploadMedia(
+  bytes: Uint8Array,
+  mimeType: string,
+  filename: string
+): Promise<string> {
+  const url = apiUrl(`${process.env.WHATSAPP_PHONE_NUMBER_ID}/media`)
+
+  const form = new FormData()
+  form.append('messaging_product', 'whatsapp')
+  form.append('type', mimeType)
+  // Uint8Array's `buffer` type (ArrayBufferLike) doesn't structurally match
+  // BlobPart's ArrayBuffer expectation in this TS lib version — a type-only
+  // mismatch, not a runtime one, so the cast is safe here.
+  form.append('file', new Blob([bytes as BlobPart], { type: mimeType }), filename)
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}` },
+    body: form,
+  })
+
+  if (!res.ok) {
+    const errorBody = await res.text()
+    throw new Error(`WhatsApp uploadMedia failed (${res.status}): ${errorBody}`)
+  }
+
+  const data = await res.json()
+  return data.id as string
+}
+
+/**
+ * Sends a previously-uploaded media file as a document message.
+ * Retries once on transient failure (429, 5xx) — same policy as sendImage.
+ */
+export async function sendDocument(
+  to: string,
+  mediaId: string,
+  filename: string,
+  caption?: string
+): Promise<void> {
+  const url = apiUrl(`${process.env.WHATSAPP_PHONE_NUMBER_ID}/messages`)
+  const delays = [1500]
+
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.WHATSAPP_ACCESS_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to,
+        type: 'document',
+        document: caption ? { id: mediaId, filename, caption } : { id: mediaId, filename },
+      }),
+    })
+
+    if (res.ok) return
+    if (attempt === delays.length) {
+      const errorBody = await res.text()
+      throw new Error(`WhatsApp sendDocument failed (${res.status}): ${errorBody}`)
+    }
+    await new Promise((r) => setTimeout(r, delays[attempt]))
+  }
+}
+
+/**
  * Marks an incoming message as read (sends blue ticks to the user immediately,
  * so they know ZOE received their message while it's thinking).
  * Non-throwing — UX enhancement only.
